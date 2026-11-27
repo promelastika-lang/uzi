@@ -2,6 +2,7 @@
 import { data, list, put, putMany, remove, removeMany, getSettings, setSettings } from './db.js';
 import { SYSTEMS, normalizeBlocks, hasContent, splitProbes, joinProbes, systemById, patientName } from './models.js';
 import { uid, pad, toDate, dayKey } from './util.js';
+import { removeMediaOf } from './media.js';
 
 // ---------- Выборки (без корзины) ----------
 
@@ -270,7 +271,10 @@ export const forgetCatalogItem = (kind, name) => remove('catalog', kind + ':' + 
 
 async function removeOrphanPatient(patientId) {
   const stillUsed = list('appointments').some((a) => a.patientId === patientId);
-  if (!stillUsed && data.patients.has(patientId)) await remove('patients', patientId);
+  if (!stillUsed && data.patients.has(patientId)) {
+    await remove('patients', patientId);
+    await removeMediaOf({ patientIds: [patientId] });
+  }
 }
 
 // ---------- Корзина ----------
@@ -296,6 +300,7 @@ export async function purgeTrash(days = 0) {
   const victims = trashedAppointments().filter((a) => new Date(a.deletedAt).getTime() <= limit);
   const patientIds = new Set(victims.map((a) => a.patientId).filter(Boolean));
   await removeMany('appointments', victims.map((a) => a.id));
+  await removeMediaOf({ appointmentIds: victims.map((a) => a.id) });
   for (const pid of patientIds) await removeOrphanPatient(pid);
   return victims.length;
 }

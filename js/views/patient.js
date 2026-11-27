@@ -3,12 +3,14 @@ import { html, useState } from '../../vendor/standalone.module.js';
 import { useData } from '../db.js';
 import { t } from '../i18n.js';
 import { navigate } from '../router.js';
-import { Screen, Group, Row, Empty, SearchBox, alertDialog } from '../ui.js';
+import { Screen, Group, Row, Empty, SearchBox, Chips, alertDialog } from '../ui.js';
 import {
   SYSTEMS, STATUS, FIELD_INDEX, systemById, normalizeBlocks, hasContent, fieldNumber, fieldLabel, evaluate, rangeText, hasRange,
   pickReference, buildRefIndex, patientInfo, patientName, birthText, studyShort, bmi, translit,
 } from '../models.js';
-import { patientStudies, patientOf, recentPatients, searchAppointments, lastBlockFor } from '../ops.js';
+import { patientStudies, patientOf, recentPatients, appointmentsSorted, lastBlockFor } from '../ops.js';
+import { mediaOfPatient } from '../media.js';
+import { enabledBlocks, blockStatus } from '../models.js';
 import { fmtNum, fmtDate, fmtDateTime, fileDate } from '../util.js';
 import { buildHistoryDoc, renderPdf } from '../pdf.js';
 import { BlockResults, PdfSheet, pdfOptions } from './appointment.js';
@@ -80,6 +82,8 @@ export function PatientHistoryScreen({ id }) {
           onClick=${() => navigate('/patient/' + id + '/trend')} />
         <${Row} label=${t('compare.title')} sub=${studies.length >= 2 ? null : t('compare.need_two')} icon="compare" accent chevron
           onClick=${() => navigate('/patient/' + id + '/compare')} />
+        <${Row} label=${t('media.patient')} value=${mediaOfPatient(id).length ? String(mediaOfPatient(id).length) : null} icon="photo" accent chevron
+          onClick=${() => navigate('/patient/' + id + '/media')} />
         <${Row} label=${busy ? t('pdf.building') : t('history.pdf')} icon="doc" accent chevron onClick=${makePdf} />
       <//>
 
@@ -259,31 +263,65 @@ export function CompareScreen({ id }) {
     <//>`;
 }
 
-// ---------- Общий поиск ----------
+// ---------- Общий поиск и фильтры ----------
 
 export function SearchScreen() {
-  useData();
+  const d = useData();
   const [query, setQuery] = useState('');
-  const q = query.trim();
-  const results = searchAppointments(q);
-  const recent = q.length < 2 ? recentPatients(5) : [];
+  const [systems, setSystems] = useState([]);
+  const [onlyAbnormal, setOnlyAbnormal] = useState(false);
+  const [noConclusion, setNoConclusion] = useState(false);
+  const q = query.trim().toLowerCase();
+  const filtering = systems.length > 0 || onlyAbnormal || noConclusion;
+  const active = q.length >= 2 || filtering;
+  const refIndex = buildRefIndex(d.references);
+
+  const results = [];
+  if (active) {
+    for (const a of appointmentsSorted().reverse()) {
+      const p = patientOf(a);
+      if (q.length >= 2) {
+        const hay = [patientName(p), p && p.cardNumber, a.protocolNumber, a.conclusion].filter(Boolean).join('\n').toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      const blocks = enabledBlocks(a);
+      if (systems.length && !systems.every((id) => blocks.some((b) => b.system === id))) continue;
+      if (noConclusion && (a.conclusion || '').trim()) continue;
+      if (onlyAbnormal) {
+        const info = patientInfo(p, a.date);
+        if (!blocks.some((b) => blockStatus(b, refIndex, info).abnormal > 0)) continue;
+      }
+      results.push(a);
+      if (results.length >= 100) break;
+    }
+  }
+  const recent = active ? [] : recentPatients(5);
+  const toggleSystem = (id) => setSystems((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const shortToId = new Map(SYSTEMS.map((s) => [s.short, s.id]));
+  const flags = [t('filter.abnormal'), t('filter.no_conclusion')];
 
   return html`
     <${Screen} title=${t('search.title')} backTo="/">
       <${SearchBox} value=${query} onInput=${setQuery} placeholder=${t('search.placeholder')} />
+      <div class="filters">
+        <${Chips} items=${SYSTEMS.map((s) => s.short)} active=${systems.map((id) => systemById(id).short)}
+          onPick=${(short) => toggleSystem(shortToId.get(short))} />
+        <${Chips} items=${flags} active=${[onlyAbnormal && flags[0], noConclusion && flags[1]].filter(Boolean)}
+          onPick=${(label) => (label === flags[0] ? setOnlyAbnormal(!onlyAbnormal) : setNoConclusion(!noConclusion))} />
+      </div>
       ${recent.length > 0 && html`
         <${Group} title=${t('patient.recent')}>
           ${recent.map((p) => html`<${Row} key=${p.id} label=${patientName(p)} icon="person" chevron
             sub=${birthText(p) + (p.cardNumber ? '  ·  № ' + p.cardNumber : '')} onClick=${() => navigate('/patient/' + p.id)} />`)}
         <//>`}
-      ${q.length >= 2 && results.length === 0 && html`<${Empty} icon="search" text=${t('search.nothing')} />`}
-      ${q.length < 2 && recent.length === 0 && html`<${Empty} icon="search" text=${t('search.hint')} />`}
+      ${active && results.length === 0 && html`<${Empty} icon="search" text=${t('search.nothing')} />`}
+      ${!active && recent.length === 0 && html`<${Empty} icon="search" text=${t('search.hint')} />`}
       ${results.length > 0 && html`
         <${Group} title=${t('search.results', results.length)}>
           ${results.map((a) => {
             const p = patientOf(a);
             return html`<${Row} key=${a.id} label=${patientName(p)} chevron onClick=${() => navigate('/a/' + a.id)}
-              sub=${[fmtDateTime(a.date) + (a.protocolNumber ? ' · № ' + a.protocolNumber : '') + (p && p.cardNumber ? ' · карта ' + p.cardNumber : ''),
+              sub=${[fmtDateTime(a.date) + (studyShort(a) ? ' · ' + studyShort(a) : '') + (a.protocolNumber ? ' · № ' + a.protocolNumber : ''),
                 (a.conclusion || '').slice(0, 100)].filter(Boolean).join('\n')} />`;
           })}
         <//>`}

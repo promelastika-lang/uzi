@@ -9,9 +9,10 @@ import { CalendarScreen, DayScreen } from './views/calendar.js';
 import { EditScreen, DetailScreen } from './views/appointment.js';
 import { ReferencesScreen, ReferenceEditScreen, ExchangeScreen, VersionsScreen } from './views/references.js';
 import { PatientHistoryScreen, TrendScreen, CompareScreen, SearchScreen } from './views/patient.js';
+import { PatientMediaScreen } from './views/media.js';
 import { StatsScreen, TemplatesScreen, SettingsScreen, ClinicScreen, BackupScreen, HelpScreen, Onboarding } from './views/other.js';
 
-window.UZI_VERSION = '2.0.0';
+window.UZI_VERSION = '2.1.0';
 
 function applyTheme() {
   const s = getSettings();
@@ -34,6 +35,7 @@ function route(path) {
   if (a === 'a' && b) return html`<${DetailScreen} key=${'a' + b} id=${b} />`;
   if (a === 'patient' && b && c === 'trend') return html`<${TrendScreen} key=${'trend' + b} id=${b} />`;
   if (a === 'patient' && b && c === 'compare') return html`<${CompareScreen} key=${'cmp' + b} id=${b} />`;
+  if (a === 'patient' && b && c === 'media') return html`<${PatientMediaScreen} key=${'media' + b} id=${b} />`;
   if (a === 'patient' && b) return html`<${PatientHistoryScreen} key=${'p' + b} id=${b} />`;
   if (a === 'search') return html`<${SearchScreen} />`;
   if (a === 'refs' && b === 'exchange') return html`<${ExchangeScreen} />`;

@@ -2,7 +2,9 @@
 import {
   data, list, put, putMany, replaceStore, replaceEverything, mergeEverything,
   getSettings, setSettings, getFlag, setFlag, STORES, KEYS,
+  putMedia, getMediaData, removeMedia, pruneMediaData,
 } from './db.js';
+import { bufferToBase64, base64ToBuffer, orphanMediaIds } from './media.js';
 import {
   REFERENCE_SEED, SEED_VERSION, DEFAULT_TEMPLATES, PATHOLOGY_SEED, APPT_TEMPLATE_SEED, SYSTEMS,
   DESCRIPTION_KEY, formatRange, appliesText, emptyBlock,
@@ -306,10 +308,30 @@ export async function ensureSeed() {
 
 // ---------- Полная резервная копия ----------
 
-export function makeBackup() {
-  const out = { app: 'uzi-protocols', backupVersion: 2, exportedAt: new Date().toISOString(), settings: getSettings() };
-  for (const s of STORES) out[s] = list(s);
-  return JSON.stringify(out, null, 1);
+// Описания медиа хранятся в копии вместе с файлами (раздел media), а не отдельным списком.
+const BACKUP_STORES = STORES.filter((name) => name !== 'mediaMeta');
+
+/**
+ * Резервная копия всей базы. С медиа файл собирается по частям,
+ * чтобы не держать все фото и видео в памяти одной строкой.
+ */
+export async function makeBackupBlob(includeMedia = false) {
+  const out = { app: 'uzi-protocols', backupVersion: 3, exportedAt: new Date().toISOString(), settings: getSettings() };
+  for (const s of BACKUP_STORES) out[s] = list(s);
+  if (!includeMedia) return new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' });
+
+  const head = JSON.stringify(out);
+  const parts = [head.slice(0, -1), ',"media":['];
+  let first = true;
+  for (const meta of list('mediaMeta')) {
+    const buffer = await getMediaData(meta.id);
+    if (!buffer) continue;
+    const base64 = await bufferToBase64(buffer, meta.mime);
+    parts.push(new Blob([first ? '' : ',', JSON.stringify(meta).slice(0, -1), ',"dataBase64":"', base64, '"}']));
+    first = false;
+  }
+  parts.push(']}');
+  return new Blob(parts, { type: 'application/json' });
 }
 
 export function parseBackup(text) {
@@ -318,11 +340,16 @@ export function parseBackup(text) {
   if (!obj || obj.app !== 'uzi-protocols' || !Array.isArray(obj.appointments)) {
     throw new Error('Это не резервная копия «УЗИ-протоколов».');
   }
-  for (const s of STORES) {
+  for (const s of BACKUP_STORES) {
     if (obj[s] !== undefined && !Array.isArray(obj[s])) throw new Error('Копия повреждена: раздел «' + s + '» не является списком.');
     const key = KEYS[s];
     if ((obj[s] || []).some((o) => !o || o[key] === undefined || o[key] === null || o[key] === '')) {
       throw new Error('Копия повреждена: в разделе «' + s + '» есть записи без идентификатора.');
+    }
+  }
+  if (obj.media !== undefined) {
+    if (!Array.isArray(obj.media) || obj.media.some((m) => !m || !m.id || typeof m.dataBase64 !== 'string')) {
+      throw new Error('Копия повреждена: раздел с фото и видео не читается.');
     }
   }
   return obj;
@@ -341,16 +368,32 @@ export function backupStats(obj) {
     patients: count('patients'),
     references: count('references'),
     templates: count('templates'),
+    media: Array.isArray(obj.media) ? obj.media.length : null,
   };
 }
+
+const metaOf = (m) => { const { dataBase64, ...meta } = m; return meta; };
 
 /**
  * Восстановление из копии.
  * replaceAll — заменить всё; merge — обновить совпадающие и добавить новые; skipExisting — добавить только новые.
+ * Копия без медиа не трогает фото и видео тех записей, которые остаются в базе.
  */
 export async function restoreBackup(obj, strategy = 'replaceAll') {
+  const hasMedia = Array.isArray(obj.media);
+
   if (strategy === 'replaceAll') {
-    await replaceEverything(obj);
+    const snapshot = { ...obj, mediaMeta: [] };
+    if (!hasMedia) {
+      const appointmentIds = new Set((obj.appointments || []).map((a) => a.id));
+      const patientIds = new Set((obj.patients || []).map((p) => p.id));
+      snapshot.mediaMeta = list('mediaMeta').filter((m) => (m.appointmentId ? appointmentIds.has(m.appointmentId) : patientIds.has(m.patientId)));
+    }
+    await replaceEverything(snapshot);
+    if (hasMedia) {
+      for (const m of obj.media) await putMedia(metaOf(m), await base64ToBuffer(m.dataBase64));
+    }
+    await pruneMediaData();
     if (obj.settings && typeof obj.settings === 'object') setSettings(obj.settings);
     setFlag('refSeedVersion', obj.backupVersion >= 2 ? SEED_VERSION : 1);
     setFlag('templatesSeeded', 1);
@@ -362,11 +405,18 @@ export async function restoreBackup(obj, strategy = 'replaceAll') {
     await ensureSeed(); // старую копию доводим до текущей версии данных
     return;
   }
+
   const partial = {};
-  for (const s of STORES) {
+  for (const s of BACKUP_STORES) {
     const items = obj[s] || [];
     partial[s] = strategy === 'merge' ? items : items.filter((o) => !data[s].has(o[KEYS[s]]));
   }
   await mergeEverything(partial);
+  if (hasMedia) {
+    for (const m of obj.media) {
+      if (strategy === 'merge' || !data.mediaMeta.has(m.id)) await putMedia(metaOf(m), await base64ToBuffer(m.dataBase64));
+    }
+  }
+  await removeMedia(orphanMediaIds());
   await migrateToV2();
 }

@@ -23,6 +23,8 @@ import {
   shareFile, downloadBlob,
 } from '../util.js';
 import { buildProtocolPDF, protocolFileName, loadPdfMake } from '../pdf.js';
+import { storeItems, mediaOfAppointment, buildIcs } from '../media.js';
+import { SavedMedia, PendingMedia, QrSheet } from './media.js';
 
 const errText = (e) => String((e && e.message) || e);
 
@@ -45,6 +47,7 @@ export function EditScreen({ id, dayKeyValue }) {
   const [sheet, setSheet] = useState(null);
   const [saving, setSaving] = useState(false);
   const [probeText, setProbeText] = useState('');
+  const [pending, setPending] = useState([]); // фото, видео, аудио новой записи — до сохранения
   // После сохранения или отказа от записи отложенное автосохранение черновика не должно сработать.
   const draftClosed = useRef(false);
 
@@ -152,6 +155,10 @@ export function EditScreen({ id, dayKeyValue }) {
     try {
       const savedId = await saveDraft(draft, options);
       setLocal('draft', null);
+      if (pending.length) {
+        const saved = d.appointments.get(savedId);
+        await storeItems(pending, { appointmentId: savedId, patientId: saved ? saved.patientId : null });
+      }
       if (existing) {
         toast(t('common.saved'));
         back('/a/' + savedId);
@@ -164,6 +171,7 @@ export function EditScreen({ id, dayKeyValue }) {
       });
       if (next === 'next') {
         setDraft(newDraft(defaultTime(day)));
+        setPending([]);
         setDirty(false);
         setSaving(false);
         draftClosed.current = false;
@@ -320,6 +328,10 @@ export function EditScreen({ id, dayKeyValue }) {
         <${Row} label=${t('conclusion.pick_pathology')} icon="list" accent chevron onClick=${() => setSheet({ kind: 'pathologies' })} />
         <${TextRow} label=${t('conclusion.doctor')} value=${draft.doctorName} onInput=${(v) => set({ doctorName: v })} autocapitalize="words" />
       <//>
+
+      ${existing
+        ? html`<${SavedMedia} link=${{ appointmentId: existing.id, patientId: existing.patientId }} items=${mediaOfAppointment(existing.id)} />`
+        : html`<${PendingMedia} pending=${pending} setPending=${setPending} />`}
 
       <div class="pad">
         <button class="big-btn" disabled=${!canSave} onClick=${save}>${t('common.save')}</button>
@@ -550,6 +562,7 @@ export function DetailScreen({ id }) {
   const appt = d.appointments.get(id);
   const [busy, setBusy] = useState(false);
   const [pdf, setPdf] = useState(null);
+  const [qr, setQr] = useState(false);
 
   useEffect(() => {
     // Подгружаем библиотеку PDF заранее, чтобы кнопка срабатывала быстрее.
@@ -618,6 +631,14 @@ export function DetailScreen({ id }) {
     if (result === 'downloaded') toast(t('exchange.export_done'));
   };
 
+  const addToCalendar = async () => {
+    const s = getSettings();
+    const ics = buildIcs(appt, patient, { remindMinutes: s.remindMinutes, visitMinutes: s.visitMinutes });
+    const blob = new Blob([ics], { type: 'text/calendar' });
+    const result = await shareFile(blob, 'uzi-visit.ics', 'uzi-visit.ics');
+    if (result === 'downloaded') toast(t('calendar.downloaded'));
+  };
+
   const duplicate = async () => {
     const newId = await duplicateAppointment(appt.id);
     if (newId) { toast(t('appointment.duplicated')); navigate('/edit/' + newId); }
@@ -632,6 +653,8 @@ export function DetailScreen({ id }) {
       <${Group} footer=${(appt.conclusion || '').trim() ? null : t('pdf.draft_note')}>
         <${Row} label=${busy ? t('pdf.building') : t('action.make_pdf')} icon="doc" accent chevron onClick=${makePdf} />
         <${Row} label=${t('action.send_email')} sub=${appt.email || t('mail.no_email')} icon="mail" accent chevron onClick=${makePdf} />
+        <${Row} label=${t('qr.title')} icon="qr" accent chevron onClick=${() => setQr(true)} />
+        <${Row} label=${t('calendar.add')} sub=${t('calendar.add_hint', getSettings().remindMinutes)} icon="calendar" accent onClick=${addToCalendar} />
         ${patient && html`<${Row} label=${t('history.open')} icon="history" accent chevron onClick=${() => navigate('/patient/' + patient.id)} />`}
       <//>
 
@@ -674,6 +697,8 @@ export function DetailScreen({ id }) {
         <${Row} label=${t('conclusion.doctor')} value=${val(appt.doctorName)} />
       <//>
 
+      <${SavedMedia} link=${{ appointmentId: appt.id, patientId: appt.patientId }} items=${mediaOfAppointment(appt.id)} />
+
       <${Group} title=${t('detail.more')}>
         <${Row} label=${t('appt_tpl.save')} icon="spark" accent onClick=${saveTemplate} />
         <${Row} label=${t('appointment.duplicate')} icon="copy" accent onClick=${duplicate} />
@@ -694,6 +719,7 @@ export function DetailScreen({ id }) {
       <//>
 
       ${pdf && html`<${PdfSheet} pdf=${pdf} email=${appt.email} onClose=${() => setPdf(null)} />`}
+      ${qr && html`<${QrSheet} appt=${appt} patient=${patient} onClose=${() => setQr(false)} />`}
     <//>`;
 }
 

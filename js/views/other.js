@@ -10,7 +10,9 @@ import {
 import {
   SYSTEMS, STATUS, enabledBlocks, blockResults, buildRefIndex, patientInfo, patientName, studyShort, lowerFirst,
 } from '../models.js';
-import { makeBackup, parseBackup, restoreBackup, backupStats } from '../exchange.js';
+import { makeBackupBlob, parseBackup, restoreBackup, backupStats } from '../exchange.js';
+import { totalMediaBytes, fmtSize } from '../media.js';
+import { FileSheet } from './media.js';
 import {
   liveAppointments, trashedAppointments, patientOf, restoreAppointment, purgeTrash, trashDaysLeft, TRASH_DAYS,
   templateSystems, setActiveClinic,
@@ -330,6 +332,13 @@ export function SettingsScreen() {
         <${TextRow} label=${t('technical.us_system')} value=${s.usSystemName} onInput=${(v) => setSettings({ usSystemName: v })} />
       <//>
 
+      <${Group} title=${t('calendar.settings')} footer=${t('calendar.settings_hint')}>
+        <${SelectRow} label=${t('calendar.remind')} value=${String(s.remindMinutes)} onChange=${(v) => setSettings({ remindMinutes: Number(v) })}
+          options=${[0, 5, 10, 15, 30, 45, 60].map((n) => ({ value: String(n), label: n === 0 ? t('calendar.remind_at_start') : t('calendar.minutes', n) }))} />
+        <${SelectRow} label=${t('calendar.duration')} value=${String(s.visitMinutes)} onChange=${(v) => setSettings({ visitMinutes: Number(v) })}
+          options=${[15, 20, 30, 45, 60].map((n) => ({ value: String(n), label: t('calendar.minutes', n) }))} />
+      <//>
+
       ${!standalone && html`
         <${Group} title=${t('install.title')}>
           <div class="row stack"><span class="row-text">${t('install.steps')}</span></div>
@@ -461,19 +470,25 @@ export function BackupScreen() {
   const s = getSettings();
   const fileInput = useRef(null);
   const backupName = 'uzi-backup-' + fileDate() + '.json';
-  const makeBlob = () => new Blob([makeBackup()], { type: 'application/json' });
+  const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(null);
+  const mediaCount = d.mediaMeta.size;
   const trash = trashedAppointments();
   const expired = trash.filter((a) => trashDaysLeft(a) === 0).length;
 
-  const shareBackup = async () => {
-    const result = await shareFile(makeBlob(), backupName, backupName);
-    if (result !== 'cancelled') setSettings({ lastBackupAt: new Date().toISOString() });
-    if (result === 'downloaded') toast(t('backup.saved'));
-  };
-  const downloadBackup = () => {
-    downloadBlob(makeBlob(), backupName);
-    setSettings({ lastBackupAt: new Date().toISOString() });
-    toast(t('backup.saved'));
+  // Копию сначала собираем, потом показываем окно «Поделиться / Скачать»: так требует iPhone.
+  const prepare = async (includeMedia) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const blob = await makeBackupBlob(includeMedia);
+      setReady({ blob, filename: includeMedia ? 'uzi-backup-media-' + fileDate() + '.json' : backupName });
+      setSettings({ lastBackupAt: new Date().toISOString() });
+    } catch (e) {
+      alertDialog(errText(e), t('common.error'));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const onFile = async (e) => {
@@ -485,7 +500,8 @@ export function BackupScreen() {
       const st = backupStats(obj);
       const strategy = await choiceDialog({
         title: t('backup.restore_confirm'),
-        message: t('backup.restore_message', st.appointments.total, st.appointments.fresh, st.patients.total, st.patients.fresh),
+        message: t('backup.restore_message', st.appointments.total, st.appointments.fresh, st.patients.total, st.patients.fresh)
+          + '\n' + (st.media === null ? t('backup.no_media_in_file') : t('backup.media_in_file', st.media)),
         options: [
           { label: t('backup.strategy_merge'), value: 'merge' },
           { label: t('backup.strategy_skip'), value: 'skipExisting' },
@@ -519,13 +535,16 @@ export function BackupScreen() {
       <${Group} title=${t('backup.export')} footer=${t('backup.footer')}>
         <${Row} label=${t('backup.records')} value=${t('backup.records_value', liveAppointments().length, d.patients.size)} />
         <${Row} label=${t('backup.last')} value=${s.lastBackupAt ? fmtDateTime(s.lastBackupAt) : t('backup.never')} />
-        <${Row} label=${t('backup.share')} icon="share" accent onClick=${shareBackup} />
-        <${Row} label=${t('backup.download')} icon="download" accent onClick=${downloadBackup} />
+        <${Row} label=${busy ? t('backup.building') : t('backup.share')} icon="share" accent onClick=${() => prepare(false)} />
+        ${mediaCount > 0 && html`
+          <${Row} label=${t('backup.with_media')} sub=${t('backup.media_size', mediaCount, fmtSize(totalMediaBytes()))} icon="photo" accent
+            onClick=${() => prepare(true)} />`}
       <//>
       <${Group} title=${t('backup.import')} footer=${t('backup.import_footer')}>
         <${Row} label=${t('backup.restore')} icon="refresh" accent onClick=${() => fileInput.current && fileInput.current.click()} />
       <//>
       <input ref=${fileInput} type="file" accept=".json,application/json" class="hidden-input" onChange=${onFile} />
+      ${ready && html`<${FileSheet} title=${t('backup.ready')} file=${ready} hint=${t('backup.ready_hint')} onClose=${() => setReady(null)} />`}
 
       <${Group} title=${t('trash.title')} footer=${t('trash.footer', TRASH_DAYS)}>
         ${trash.length === 0 && html`<div class="row muted">${t('trash.empty')}</div>`}
@@ -547,7 +566,7 @@ export function BackupScreen() {
 
 // ---------- Помощь ----------
 
-const HELP_SECTIONS = ['protocol', 'speed', 'pdf', 'norms', 'backup', 'transfer', 'limits'];
+const HELP_SECTIONS = ['protocol', 'speed', 'pdf', 'media', 'norms', 'backup', 'transfer', 'limits'];
 
 export function HelpScreen() {
   useData();

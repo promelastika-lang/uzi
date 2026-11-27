@@ -3,7 +3,7 @@
 import { useState, useEffect } from '../vendor/standalone.module.js';
 
 const DB_NAME = 'uzi-protocols';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 // Таблицы, которые целиком держим в памяти.
 export const KEYS = {
@@ -16,9 +16,10 @@ export const KEYS = {
   apptTemplates: 'id',   // шаблоны приёма
   clinics: 'id',         // профили клиник
   catalog: 'id',         // УЗ-аппараты и датчики: «machine:Название», «probe:Название»
+  mediaMeta: 'id',       // описания фото, видео и аудио (сами файлы — в таблице media)
 };
 export const STORES = Object.keys(KEYS);
-// Медиа (фото, видео, аудио) лежит отдельно и в память не загружается.
+// Сами файлы (фото, видео, аудио) лежат отдельно и в память не загружаются.
 const MEDIA_STORE = 'media';
 
 export const data = {};
@@ -181,6 +182,50 @@ export async function mergeEverything(partial) {
 
 export const list = (store) => Array.from(data[store].values());
 
+// ---------- Медиа: описание в памяти, файл — в базе ----------
+
+/** Сохранить файл и его описание одной транзакцией. buffer — ArrayBuffer. */
+export async function putMedia(meta, buffer) {
+  const copy = clone(meta);
+  await run(['mediaMeta', MEDIA_STORE], 'readwrite', (t) => {
+    t.objectStore('mediaMeta').put(copy);
+    t.objectStore(MEDIA_STORE).put({ id: copy.id, data: buffer });
+  });
+  data.mediaMeta.set(copy.id, copy);
+  notify();
+  return copy;
+}
+
+/** Содержимое файла (ArrayBuffer) или null. */
+export function getMediaData(id) {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction([MEDIA_STORE], 'readonly').objectStore(MEDIA_STORE).get(id);
+    req.onsuccess = () => resolve(req.result ? req.result.data : null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function removeMedia(ids) {
+  if (!ids.length) return;
+  await run(['mediaMeta', MEDIA_STORE], 'readwrite', (t) => {
+    ids.forEach((id) => { t.objectStore('mediaMeta').delete(id); t.objectStore(MEDIA_STORE).delete(id); });
+  });
+  ids.forEach((id) => data.mediaMeta.delete(id));
+  notify();
+}
+
+/** Удалить файлы, у которых не осталось описания (после восстановления из копии). */
+export async function pruneMediaData() {
+  const keys = await new Promise((resolve, reject) => {
+    const req = db.transaction([MEDIA_STORE], 'readonly').objectStore(MEDIA_STORE).getAllKeys();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+  const orphans = keys.filter((k) => !data.mediaMeta.has(k));
+  if (!orphans.length) return;
+  await run([MEDIA_STORE], 'readwrite', (t) => orphans.forEach((k) => t.objectStore(MEDIA_STORE).delete(k)));
+}
+
 // ---------- Настройки (в localStorage) ----------
 
 const SETTINGS_KEY = 'uzi-settings';
@@ -197,6 +242,7 @@ const DEFAULT_SETTINGS = {
   pdfSignature: true,
   pdfFontScale: 1,
   remindMinutes: 15,
+  visitMinutes: 30,
   onboardingDone: false,
   lastBackupAt: '',
 };
