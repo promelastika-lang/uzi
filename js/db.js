@@ -3,17 +3,26 @@
 import { useState, useEffect } from '../vendor/standalone.module.js';
 
 const DB_NAME = 'uzi-protocols';
-const DB_VERSION = 1;
-export const KEYS = { patients: 'id', appointments: 'id', references: 'key', versions: 'id', templates: 'id' };
-export const STORES = Object.keys(KEYS);
+const DB_VERSION = 2;
 
-export const data = {
-  patients: new Map(),
-  appointments: new Map(),
-  references: new Map(),
-  versions: new Map(),
-  templates: new Map(),
+// Таблицы, которые целиком держим в памяти.
+export const KEYS = {
+  patients: 'id',
+  appointments: 'id',
+  references: 'key',
+  versions: 'id',
+  templates: 'id',       // шаблоны заключений
+  pathologies: 'id',     // справочник патологий
+  apptTemplates: 'id',   // шаблоны приёма
+  clinics: 'id',         // профили клиник
+  catalog: 'id',         // УЗ-аппараты и датчики: «machine:Название», «probe:Название»
 };
+export const STORES = Object.keys(KEYS);
+// Медиа (фото, видео, аудио) лежит отдельно и в память не загружается.
+const MEDIA_STORE = 'media';
+
+export const data = {};
+for (const s of STORES) data[s] = new Map();
 
 let db = null;
 const listeners = new Set();
@@ -43,8 +52,13 @@ function openDB() {
       for (const s of STORES) {
         if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: KEYS[s] });
       }
+      if (!d.objectStoreNames.contains(MEDIA_STORE)) d.createObjectStore(MEDIA_STORE, { keyPath: 'id' });
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      // Если приложение открыто в другой вкладке со старой версией — уступаем обновлению.
+      req.result.onversionchange = () => { req.result.close(); };
+      resolve(req.result);
+    };
     req.onerror = () => reject(req.error);
     req.onblocked = () => reject(new Error('База данных занята другой вкладкой. Закройте её и обновите страницу.'));
   });
@@ -87,8 +101,10 @@ export async function initDB() {
   }
 }
 
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
 export async function put(store, obj) {
-  const copy = JSON.parse(JSON.stringify(obj));
+  const copy = clone(obj);
   await run([store], 'readwrite', (t) => t.objectStore(store).put(copy));
   data[store].set(copy[KEYS[store]], copy);
   notify();
@@ -96,7 +112,8 @@ export async function put(store, obj) {
 }
 
 export async function putMany(store, objs) {
-  const copies = objs.map((o) => JSON.parse(JSON.stringify(o)));
+  if (!objs.length) return;
+  const copies = objs.map(clone);
   await run([store], 'readwrite', (t) => {
     const os = t.objectStore(store);
     copies.forEach((o) => os.put(o));
@@ -112,6 +129,7 @@ export async function remove(store, key) {
 }
 
 export async function removeMany(store, keys) {
+  if (!keys.length) return;
   await run([store], 'readwrite', (t) => {
     const os = t.objectStore(store);
     keys.forEach((k) => os.delete(k));
@@ -122,7 +140,7 @@ export async function removeMany(store, keys) {
 
 /** Полностью заменить содержимое одной таблицы (одной транзакцией). */
 export async function replaceStore(store, objs) {
-  const copies = objs.map((o) => JSON.parse(JSON.stringify(o)));
+  const copies = objs.map(clone);
   await run([store], 'readwrite', (t) => {
     const os = t.objectStore(store);
     os.clear();
@@ -135,7 +153,7 @@ export async function replaceStore(store, objs) {
 /** Восстановление из полной резервной копии: все таблицы одной транзакцией. */
 export async function replaceEverything(snapshot) {
   const prepared = {};
-  for (const s of STORES) prepared[s] = (snapshot[s] || []).map((o) => JSON.parse(JSON.stringify(o)));
+  for (const s of STORES) prepared[s] = (snapshot[s] || []).map(clone);
   await run(STORES, 'readwrite', (t) => {
     for (const s of STORES) {
       const os = t.objectStore(s);
@@ -144,6 +162,20 @@ export async function replaceEverything(snapshot) {
     }
   });
   for (const s of STORES) data[s] = new Map(prepared[s].map((o) => [o[KEYS[s]], o]));
+  notify();
+}
+
+/** Дописать записи сразу в несколько таблиц одной транзакцией (импорт копии «объединить» / «только новые»). */
+export async function mergeEverything(partial) {
+  const prepared = {};
+  for (const s of STORES) prepared[s] = (partial[s] || []).map(clone);
+  await run(STORES, 'readwrite', (t) => {
+    for (const s of STORES) {
+      const os = t.objectStore(s);
+      prepared[s].forEach((o) => os.put(o));
+    }
+  });
+  for (const s of STORES) prepared[s].forEach((o) => data[s].set(o[KEYS[s]], o));
   notify();
 }
 
@@ -158,9 +190,15 @@ const DEFAULT_SETTINGS = {
   calendarMode: 'month',
   doctorName: '',
   usSystemName: '',
-  probeType: '',
-  orgName: '',
+  orgName: '',       // до версии 2 — шапка протокола; теперь профили клиник
   orgAddress: '',
+  pdfLogo: true,
+  pdfSources: true,
+  pdfSignature: true,
+  pdfFontScale: 1,
+  remindMinutes: 15,
+  onboardingDone: false,
+  lastBackupAt: '',
 };
 let settingsCache = null;
 
@@ -184,4 +222,18 @@ export function getFlag(name) {
 }
 export function setFlag(name, value) {
   try { localStorage.setItem('uzi-flag-' + name, String(value)); } catch (e) { /* ignore */ }
+}
+
+/** Небольшие данные «на потом»: черновик записи, последние значения полей. */
+export function getLocal(name, fallback) {
+  try {
+    const raw = localStorage.getItem('uzi-' + name);
+    return raw === null ? fallback : JSON.parse(raw);
+  } catch (e) { return fallback; }
+}
+export function setLocal(name, value) {
+  try {
+    if (value === null || value === undefined) localStorage.removeItem('uzi-' + name);
+    else localStorage.setItem('uzi-' + name, JSON.stringify(value));
+  } catch (e) { /* ignore */ }
 }

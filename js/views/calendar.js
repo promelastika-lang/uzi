@@ -1,12 +1,12 @@
-// Расписание (неделя / месяц) и список записей на день.
+// Расписание (неделя / месяц / лента) и список записей на день.
 import { html, useState } from '../../vendor/standalone.module.js';
 import { useData, getSettings, setSettings, getFlag, setFlag } from '../db.js';
 import { t, locale } from '../i18n.js';
 import { navigate } from '../router.js';
 import { Screen, NavButton, Segmented, Icon, Empty, confirmDialog, toast } from '../ui.js';
-import { appointmentsByDay, patientOf, deleteAppointment } from '../ops.js';
+import { appointmentsByDay, appointmentsSorted, patientOf, deleteAppointment, restoreAppointment, duplicateAppointment } from '../ops.js';
 import { patientName, studyShort } from '../models.js';
-import { dayKey, parseDayKey, addDays, addMonths, startOfWeek, startOfMonth, isSameDay, fmtTime } from '../util.js';
+import { dayKey, parseDayKey, addDays, addMonths, startOfDay, startOfWeek, startOfMonth, isSameDay, fmtTime } from '../util.js';
 
 const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
@@ -14,19 +14,35 @@ function monthTitle(d) {
   const s = new Intl.DateTimeFormat(locale(), { month: 'long', year: 'numeric' }).format(d);
   return cap(s.replace(/\s*г\.?$/, ''));
 }
-function shortDay(d) {
-  return new Intl.DateTimeFormat(locale(), { day: 'numeric', month: 'short' }).format(d);
-}
-function weekdayShort(d) {
-  return new Intl.DateTimeFormat(locale(), { weekday: 'short' }).format(d);
-}
+const shortDay = (d) => new Intl.DateTimeFormat(locale(), { day: 'numeric', month: 'short' }).format(d);
+const weekdayShort = (d) => new Intl.DateTimeFormat(locale(), { weekday: 'short' }).format(d);
+const longDay = (d) => cap(new Intl.DateTimeFormat(locale(), { weekday: 'long', day: 'numeric', month: 'long' }).format(d));
 
 const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const isStandalone = () => window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
 
+/** Сколько дней прошло с последней резервной копии (null — копий не было). */
+export function backupAgeDays() {
+  const last = getSettings().lastBackupAt;
+  if (!last) return null;
+  return Math.floor((Date.now() - new Date(last).getTime()) / 86400000);
+}
+
+function ApptLine({ a }) {
+  return html`<button class="agenda-item" onClick=${() => navigate('/a/' + a.id)}>
+    <span class="appt-time">${fmtTime(a.date)}</span>
+    <span class="row-main">
+      <span class="row-label">${patientName(patientOf(a))}</span>
+      ${studyShort(a) && html`<span class="row-sub">${studyShort(a)}</span>`}
+    </span>
+    ${!(a.conclusion || '').trim() && html`<span class="draft-dot" title=${t('agenda.no_conclusion')}></span>`}
+  </button>`;
+}
+
 export function CalendarScreen() {
   useData();
-  const mode = getSettings().calendarMode === 'week' ? 'week' : 'month';
+  const stored = getSettings().calendarMode;
+  const mode = stored === 'week' || stored === 'agenda' ? stored : 'month';
   const [anchor, setAnchor] = useState(new Date());
   const [hintHidden, setHintHidden] = useState(!!getFlag('installHintHidden'));
   const groups = appointmentsByDay();
@@ -50,6 +66,19 @@ export function CalendarScreen() {
     for (let i = 0; i < leading; i++) cells.push(null);
     for (let i = 0; i < daysInMonth; i++) cells.push(new Date(first.getFullYear(), first.getMonth(), i + 1));
     const weekdays = Array.from({ length: 7 }, (_, i) => weekdayShort(addDays(gridStart, i)));
+
+    // Сводка месяца: исследований, пациентов, рабочих дней.
+    let studies = 0;
+    let days = 0;
+    const patients = new Set();
+    for (const d of cells) {
+      if (!d) continue;
+      const items = groups.get(dayKey(d)) || [];
+      if (items.length) days += 1;
+      studies += items.length;
+      items.forEach((a) => { if (a.patientId) patients.add(a.patientId); });
+    }
+
     title = monthTitle(anchor);
     body = html`
       <div class="month">
@@ -64,8 +93,13 @@ export function CalendarScreen() {
             </button>`;
           })}
         </div>
+        <div class="stat-cards month-summary">
+          <div class="stat-card"><b>${studies}</b><span>${t('stats.studies')}</span></div>
+          <div class="stat-card"><b>${patients.size}</b><span>${t('stats.patients')}</span></div>
+          <div class="stat-card"><b>${days}</b><span>${t('stats.days')}</span></div>
+        </div>
       </div>`;
-  } else {
+  } else if (mode === 'week') {
     const start = startOfWeek(anchor);
     const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
     title = shortDay(days[0]) + ' – ' + shortDay(days[6]);
@@ -84,21 +118,56 @@ export function CalendarScreen() {
           </button>`;
         })}
       </div>`;
+  } else {
+    // Лента: записи подряд, начиная с выбранной недели, на 4 недели вперёд.
+    const start = startOfWeek(anchor);
+    const end = addDays(start, 28);
+    title = shortDay(start) + ' – ' + shortDay(addDays(end, -1));
+    const days = [];
+    for (let d = new Date(start); d < end; d = addDays(d, 1)) {
+      const items = groups.get(dayKey(d)) || [];
+      if (items.length) days.push({ day: new Date(d), items });
+    }
+    body = days.length === 0
+      ? html`<${Empty} icon="calendar" text=${t('agenda.empty')} />`
+      : html`<div class="agenda">
+          ${days.map(({ day, items }) => html`
+            <section key=${dayKey(day)} class="agenda-day">
+              <h3 class=${isSameDay(day, today) ? 'today' : ''}>${longDay(day)}</h3>
+              <div class="card">${items.map((a) => html`<${ApptLine} key=${a.id} a=${a} />`)}</div>
+            </section>`)}
+        </div>`;
   }
 
   const showHint = !hintHidden && isIOS() && !isStandalone();
+  const age = backupAgeDays();
+  const total = appointmentsSorted().length;
+  const needBackup = total > 0 && (age === null || age > 7);
 
   return html`
     <${Screen} title=${t('schedule')} tabs
-      right=${html`<${NavButton} icon="plus" label=${t('appointment.new')} onClick=${() => navigate('/new/' + dayKey(today))} />`}>
+      left=${html`<${NavButton} icon="search" label=${t('search.title')} onClick=${() => navigate('/search')} />`}
+      right=${html`
+        <${NavButton} icon="tomorrow" label=${t('calendar.tomorrow')} onClick=${() => navigate('/new/' + dayKey(addDays(startOfDay(today), 1)))} />
+        <${NavButton} icon="plus" label=${t('appointment.new')} onClick=${() => navigate('/new/' + dayKey(today))} />`}>
       ${showHint && html`
         <div class="hint">
           <div><b>${t('install.title')}</b><br />${t('install.short')}</div>
           <button class="link" onClick=${() => { setFlag('installHintHidden', 1); setHintHidden(true); }}>${t('common.ok')}</button>
         </div>`}
+      ${needBackup && html`
+        <button class="hint warn" onClick=${() => navigate('/settings/backup')}>
+          <${Icon} name="warn" />
+          <div>${age === null ? t('backup.banner_never') : t('backup.banner_days', age)}</div>
+          <${Icon} name="right" size=${16} />
+        </button>`}
       <div class="pad">
         <${Segmented} value=${mode} onChange=${(v) => setSettings({ calendarMode: v })}
-          options=${[{ value: 'week', label: t('calendar.week') }, { value: 'month', label: t('calendar.month') }]} />
+          options=${[
+            { value: 'week', label: t('calendar.week') },
+            { value: 'month', label: t('calendar.month') },
+            { value: 'agenda', label: t('calendar.agenda') },
+          ]} />
         <div class="period">
           <button class="icon-btn" onClick=${() => shift(-1)} aria-label="‹"><${Icon} name="left" /></button>
           <button class="period-title" onClick=${() => setAnchor(new Date())}>${title}</button>
@@ -119,13 +188,17 @@ export function DayScreen({ dayKeyValue }) {
   const del = async (a) => {
     const ok = await confirmDialog({
       title: t('appointment.delete_confirm'),
-      message: patientName(patientOf(a)) + ', ' + fmtTime(a.date),
+      message: patientName(patientOf(a)) + ', ' + fmtTime(a.date) + '\n' + t('trash.note'),
       confirmLabel: t('common.delete'),
       destructive: true,
     });
     if (!ok) return;
     await deleteAppointment(a.id);
-    toast(t('appointment.deleted'));
+    toast(t('appointment.deleted'), { label: t('common.undo'), run: () => restoreAppointment(a.id) });
+  };
+  const duplicate = async (a) => {
+    await duplicateAppointment(a.id);
+    toast(t('appointment.duplicated'));
   };
 
   return html`
@@ -146,8 +219,9 @@ export function DayScreen({ dayKeyValue }) {
                     ${studyShort(a) && html`<span class="row-sub">${studyShort(a)}</span>`}
                     ${a.protocolNumber && html`<span class="row-sub">№ ${a.protocolNumber}</span>`}
                   </span>
-                  <span class="row-chevron"><${Icon} name="right" size=${16} /></span>
+                  ${!editing && html`<span class="row-chevron"><${Icon} name="right" size=${16} /></span>`}
                 </button>
+                ${editing && html`<button class="del-btn quiet" onClick=${() => duplicate(a)} aria-label=${t('appointment.duplicate')}><${Icon} name="copy" size=${20} /></button>`}
               </div>`)}
           </div></section>`}
     <//>`;

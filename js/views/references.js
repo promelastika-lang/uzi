@@ -2,17 +2,17 @@
 import { html, useState, useRef } from '../../vendor/standalone.module.js';
 import { useData, put, remove } from '../db.js';
 import { t, locale } from '../i18n.js';
-import { navigate, back } from '../router.js';
+import { navigate, replace, back } from '../router.js';
 import {
-  Screen, NavButton, Group, Row, TextRow, AreaRow, Segmented, Sheet, Icon, Empty, SearchBox,
+  Screen, NavButton, Group, Row, TextRow, AreaRow, SelectRow, Segmented, Sheet, Icon, Empty, SearchBox,
   confirmDialog, alertDialog, promptDialog, toast,
 } from '../ui.js';
-import { rangeText, sourceText, formatRange, seedItem } from '../models.js';
+import { rangeText, sourceText, formatRange, seedItem, appliesText } from '../models.js';
 import {
   sortedRefs, toItem, exportJSON, parseExport, diffItems, diffEffect, applyImport,
   snapshot, restoreVersion, resetToDefaults, seedSummary,
 } from '../exchange.js';
-import { parseNum, fmtNum, fileDate, shareFile, downloadBlob, readFileText } from '../util.js';
+import { parseNum, fmtNum, fileDate, shareFile, downloadBlob, readFileText, uid } from '../util.js';
 
 const errText = (e) => String((e && e.message) || e);
 
@@ -53,7 +53,8 @@ export function ReferencesScreen() {
       ${all.length === 0 && html`<${Empty} icon="book" text=${t('references.empty')} />`}
       ${groups.map((g) => html`
         <${Group} key=${g.organ} title=${g.organ}>
-          ${g.items.map((r) => html`<${Row} key=${r.key} label=${r.title} sub=${sourceText(r)} value=${rangeText(r)}
+          ${g.items.map((r) => html`<${Row} key=${r.key} label=${r.title + (appliesText(r) ? ' (' + appliesText(r) + ')' : '')}
+            sub=${sourceText(r)} value=${rangeText(r)}
             chevron onClick=${() => navigate('/ref/' + encodeURIComponent(r.key))} />`)}
         <//>`)}
       ${!q && html`
@@ -78,6 +79,9 @@ export function ReferenceEditScreen({ refKey }) {
     source: original.source || '',
     sourcePage: original.sourcePage || '',
     note: original.note || '',
+    gender: original.gender || '',
+    minAge: original.minAge === null || original.minAge === undefined ? '' : String(original.minAge),
+    maxAge: original.maxAge === null || original.maxAge === undefined ? '' : String(original.maxAge),
   } : null));
   const [dirty, setDirty] = useState(false);
 
@@ -90,8 +94,14 @@ export function ReferenceEditScreen({ refKey }) {
   const max = parseNum(form.max);
   const badNumber = (form.min.trim() !== '' && min === null) || (form.max.trim() !== '' && max === null);
   const badRange = min !== null && max !== null && min > max;
-  const canSave = dirty && !badNumber && !badRange && form.title.trim() !== '';
+  const minAge = form.minAge.trim() === '' ? null : parseInt(form.minAge, 10);
+  const maxAge = form.maxAge.trim() === '' ? null : parseInt(form.maxAge, 10);
+  const badAge = (minAge !== null && !(minAge >= 0 && minAge < 130)) || (maxAge !== null && !(maxAge >= 0 && maxAge < 130))
+    || (minAge !== null && maxAge !== null && minAge > maxAge);
+  const canSave = dirty && !badNumber && !badRange && !badAge && form.title.trim() !== '';
   const seed = seedItem(refKey);
+  const baseKey = original.variantOf || original.key;
+  const variants = sortedRefs().filter((r) => r.key !== original.key && (r.variantOf || r.key) === baseKey);
 
   const save = async () => {
     if (!canSave) return;
@@ -104,8 +114,25 @@ export function ReferenceEditScreen({ refKey }) {
       source: form.source.trim(),
       sourcePage: form.sourcePage.trim(),
       note: form.note.trim(),
+      gender: form.gender,
+      minAge,
+      maxAge,
     });
     toast(t('common.saved'));
+    back('/refs');
+  };
+
+  // Вариант нормы для другого пола или возраста: копия параметра со своими границами.
+  const addVariant = async () => {
+    const key = baseKey + '__' + uid().slice(0, 8);
+    await put('references', { ...toItem(original), key, variantOf: baseKey, gender: '', minAge: null, maxAge: null, sortIndex: (original.sortIndex ?? 0) + 0.5 });
+    replace('/ref/' + encodeURIComponent(key));
+  };
+
+  const removeVariant = async () => {
+    const ok = await confirmDialog({ title: t('reference.delete_confirm'), message: original.title + ' — ' + (appliesText(original) || rangeText(original)), confirmLabel: t('common.delete'), destructive: true });
+    if (!ok) return;
+    await remove('references', original.key);
     back('/refs');
   };
 
@@ -141,14 +168,29 @@ export function ReferenceEditScreen({ refKey }) {
         <${TextRow} label=${t('reference.max')} value=${form.max} inputmode="decimal" placeholder="—" onInput=${(v) => set({ max: v })} />
         <${Row} label=${t('reference.preview')} value=${badNumber || badRange ? '—' : formatRange(min, max, form.unit.trim())} />
       <//>
+      <${Group} title=${t('reference.section.applies')} footer=${badAge ? t('reference.age_invalid') : t('reference.applies_hint')}>
+        <${SelectRow} label=${t('patient.gender')} value=${form.gender} onChange=${(v) => set({ gender: v })}
+          options=${[{ value: '', label: t('reference.any_gender') }, { value: 'Ж', label: t('reference.female') }, { value: 'М', label: t('reference.male') }]} />
+        <${TextRow} label=${t('reference.min_age')} value=${form.minAge} inputmode="numeric" placeholder="—" onInput=${(v) => set({ minAge: v.replace(/\D/g, '') })} />
+        <${TextRow} label=${t('reference.max_age')} value=${form.maxAge} inputmode="numeric" placeholder="—" onInput=${(v) => set({ maxAge: v.replace(/\D/g, '') })} />
+      <//>
       <${Group} title=${t('reference.section.source')}>
         <${TextRow} label=${t('reference.source')} value=${form.source} onInput=${(v) => set({ source: v })} />
         <${TextRow} label=${t('reference.page')} value=${form.sourcePage} onInput=${(v) => set({ sourcePage: v })} autocapitalize="off" />
         <${AreaRow} label=${t('reference.note')} value=${form.note} onInput=${(v) => set({ note: v })} />
       <//>
+      <${Group} title=${t('reference.variants')} footer=${t('reference.variants_hint')}>
+        ${variants.map((r) => html`<${Row} key=${r.key} label=${appliesText(r) || t('reference.for_all')} value=${rangeText(r)} chevron
+          onClick=${() => replace('/ref/' + encodeURIComponent(r.key))} />`)}
+        <${Row} label=${t('reference.add_variant')} icon="plus" accent onClick=${addVariant} />
+      <//>
       ${seed && html`
         <${Group} footer=${t('reference.default_value') + ' ' + seedSummary(seed)}>
           <${Row} label=${t('reference.restore_default')} icon="refresh" accent onClick=${restore} />
+        <//>`}
+      ${!seed && html`
+        <${Group}>
+          <${Row} label=${t('reference.delete')} icon="trash" destructive onClick=${removeVariant} />
         <//>`}
     <//>`;
 }

@@ -31,30 +31,37 @@ export const STATUS = {
 };
 
 export const DESCRIPTION_KEY = 'description';
+export const DISCLAIMER = 'Внимание! Данное заключение не является диагнозом. Требуется консультация специалиста.';
 
 // ---------- Справочник норм (стартовые значения) ----------
 // Значения справочные — врач сверяет их с первоисточниками и правит в приложении.
 
-export const SEED_VERSION = 1;
+export const SEED_VERSION = 2;
 const IZR = 'Изранов В.А. Лекция «Нормы УЗИ» (shopdon.ru)';
 const EFS = 'EFSUMB Course Book, 2nd ed.';
 const EFS_ESR = 'EFSUMB Course Book, 2nd ed.; ESR';
 const SUM = 'Сводные УЗИ-нормы';
 
-const S = (key, organ, title, unit, minValue, maxValue, source, sourcePage, note) =>
-  ({ key, organ, title, unit, minValue, maxValue, source, sourcePage: sourcePage || '', note: note || '' });
+// extra: { variantOf, gender, minAge, maxAge } — вариант нормы для пола / возраста
+const S = (key, organ, title, unit, minValue, maxValue, source, sourcePage, note, extra) => ({
+  key, organ, title, unit, minValue, maxValue, source,
+  sourcePage: sourcePage || '', note: note || '',
+  variantOf: '', gender: '', minAge: null, maxAge: null,
+  ...(extra || {}),
+});
 
 export const REFERENCE_SEED = [
   S('liver_right_kvr', 'Печень', 'Правая доля, КВР', 'мм', null, 150, IZR, '2022', 'Косой вертикальный размер'),
   S('liver_right_thick', 'Печень', 'Правая доля, толщина', 'мм', null, 125, IZR, '2022'),
   S('liver_left_kkr', 'Печень', 'Левая доля, ККР', 'мм', null, 100, IZR, '2022', 'Кранио-каудальный размер'),
   S('liver_left_thick', 'Печень', 'Левая доля, толщина', 'мм', null, 60, IZR, '2022'),
+  S('liver_caudate', 'Печень', 'Хвостатая доля', 'мм', null, 35, IZR, '2022'),
   S('portal_vein', 'Печень', 'Воротная вена, диаметр', 'мм', null, 13, IZR, '2022'),
 
-  S('gb_length', 'Жёлчный пузырь', 'Длина', 'мм', 50, 100, IZR, '2022', 'Натощак'),
-  S('gb_width', 'Жёлчный пузырь', 'Ширина', 'мм', null, 35, IZR, '2022', 'Натощак'),
-  S('gb_wall', 'Жёлчный пузырь', 'Толщина стенки', 'мм', null, 3, IZR, '2022'),
-  S('cbd', 'Жёлчный пузырь', 'Холедох, диаметр', 'мм', null, 6, IZR, '2022', 'После холецистэктомии может быть шире'),
+  S('gb_length', 'Желчный пузырь', 'Длина', 'мм', 50, 100, IZR, '2022', 'Натощак'),
+  S('gb_width', 'Желчный пузырь', 'Ширина', 'мм', null, 35, IZR, '2022', 'Натощак'),
+  S('gb_wall', 'Желчный пузырь', 'Толщина стенки', 'мм', null, 3, IZR, '2022'),
+  S('cbd', 'Желчный пузырь', 'Холедох, диаметр', 'мм', null, 6, IZR, '2022', 'После холецистэктомии может быть шире'),
 
   S('panc_head', 'Поджелудочная железа', 'Головка', 'мм', 15, 25, EFS, '2024'),
   S('panc_body', 'Поджелудочная железа', 'Тело', 'мм', null, 20, EFS, '2024'),
@@ -87,36 +94,88 @@ export const REFERENCE_SEED = [
   S('thyroid_lobe_width', 'Щитовидная железа', 'Доля, ширина', 'мм', 15, 20, SUM, ''),
   S('thyroid_lobe_thick', 'Щитовидная железа', 'Доля, толщина', 'мм', 13, 18, SUM, ''),
   S('thyroid_isthmus', 'Щитовидная железа', 'Перешеек', 'мм', null, 5, SUM, ''),
-  S('thyroid_volume', 'Щитовидная железа', 'Общий объём (Ж)', 'мл', null, 18, SUM, '', 'Объём доли = Д × Ш × Т × 0,479'),
-  S('thyroid_volume_m', 'Щитовидная железа', 'Общий объём (М)', 'мл', null, 25, SUM, '', 'Объём доли = Д × Ш × Т × 0,479'),
+  S('thyroid_volume', 'Щитовидная железа', 'Общий объём', 'мл', null, 18, SUM, '', 'Объём доли = Д × Ш × Т × 0,479', { gender: 'Ж' }),
+  S('thyroid_volume_m', 'Щитовидная железа', 'Общий объём', 'мл', null, 25, SUM, '', 'Объём доли = Д × Ш × Т × 0,479', { variantOf: 'thyroid_volume', gender: 'М' }),
 ];
 
 export const seedItem = (key) => REFERENCE_SEED.find((i) => i.key === key);
 
 // ---------- Нормы: оценка и форматирование ----------
 
+const has = (v) => v !== null && v !== undefined && v !== '';
+
 export function evaluate(ref, value) {
   if (!ref || value === null || value === undefined) return 'unknown';
   const min = ref.minValue, max = ref.maxValue;
-  if ((min === null || min === undefined) && (max === null || max === undefined)) return 'unknown';
-  if (min !== null && min !== undefined && value < min) return 'below';
-  if (max !== null && max !== undefined && value > max) return 'above';
+  if (!has(min) && !has(max)) return 'unknown';
+  if (has(min) && value < min) return 'below';
+  if (has(max) && value > max) return 'above';
   return 'normal';
 }
 
 export function formatRange(min, max, unit) {
   const u = unit ? ' ' + unit : '';
-  const hasMin = min !== null && min !== undefined;
-  const hasMax = max !== null && max !== undefined;
-  if (hasMin && hasMax) return `${fmtNum(min)}–${fmtNum(max)}${u}`;
-  if (hasMin) return `≥ ${fmtNum(min)}${u}`;
-  if (hasMax) return `≤ ${fmtNum(max)}${u}`;
+  if (has(min) && has(max)) return `${fmtNum(min)}–${fmtNum(max)}${u}`;
+  if (has(min)) return `≥ ${fmtNum(min)}${u}`;
+  if (has(max)) return `≤ ${fmtNum(max)}${u}`;
   return '—';
 }
 
 export const rangeText = (ref) => formatRange(ref.minValue, ref.maxValue, ref.unit);
 export const sourceText = (ref) => [ref.source, ref.sourcePage].filter((x) => x && String(x).trim()).join(', ');
-export const hasRange = (ref) => ref && ((ref.minValue !== null && ref.minValue !== undefined) || (ref.maxValue !== null && ref.maxValue !== undefined));
+export const hasRange = (ref) => !!ref && (has(ref.minValue) || has(ref.maxValue));
+
+/** «Ж, 18–60 лет» — для кого действует вариант нормы. Пусто — для всех. */
+export function appliesText(ref) {
+  const parts = [];
+  if (ref.gender) parts.push(ref.gender === 'М' ? 'муж.' : 'жен.');
+  if (has(ref.minAge) && has(ref.maxAge)) parts.push(`${ref.minAge}–${ref.maxAge} лет`);
+  else if (has(ref.minAge)) parts.push(`от ${ref.minAge} лет`);
+  else if (has(ref.maxAge)) parts.push(`до ${ref.maxAge} лет`);
+  return parts.join(', ');
+}
+
+/** Индекс норм: базовый ключ → все варианты (по полу и возрасту). */
+export function buildRefIndex(refs) {
+  const index = new Map();
+  for (const r of refs.values()) {
+    const base = r.variantOf || r.key;
+    if (!index.has(base)) index.set(base, []);
+    index.get(base).push(r);
+  }
+  return index;
+}
+
+/** Пол и возраст пациента на дату исследования. */
+export function patientInfo(patient, date) {
+  const info = { gender: (patient && patient.gender) || '', age: null };
+  if (patient && patient.birthYear && patient.birthMonth && patient.birthDay) {
+    const d = date ? new Date(date) : new Date();
+    let age = d.getFullYear() - patient.birthYear;
+    const before = d.getMonth() + 1 < patient.birthMonth || (d.getMonth() + 1 === patient.birthMonth && d.getDate() < patient.birthDay);
+    if (before) age -= 1;
+    if (age >= 0 && age < 130) info.age = age;
+  }
+  return info;
+}
+
+/** Подходящая норма для пациента: самый точный вариант (пол + возраст важнее общего). */
+export function pickReference(index, baseKey, info) {
+  const list = baseKey ? index.get(baseKey) : null;
+  if (!list) return null;
+  let best = null;
+  let bestScore = -1;
+  for (const r of list) {
+    if (r.gender && r.gender !== info.gender) continue;
+    const byAge = has(r.minAge) || has(r.maxAge);
+    if (byAge && info.age === null) continue;
+    if (has(r.minAge) && info.age < r.minAge) continue;
+    if (has(r.maxAge) && info.age > r.maxAge) continue;
+    const score = (r.gender ? 2 : 0) + (byAge ? 2 : 0) + (r.key === baseKey ? 1 : 0);
+    if (score > bestScore) { best = r; bestScore = score; }
+  }
+  return best;
+}
 
 // ---------- Расчёты ----------
 
@@ -134,8 +193,16 @@ function ratio(f, a, b) {
 }
 const thyroidLobe = (f, p) => num(f, p + '_volume') ?? ellipsoid(f, p + '_length', p + '_width', p + '_thick', 0.479);
 
+/** Шаг кнопок «−» и «+» по единицам измерения. */
+export function stepFor(unit) {
+  if (unit === 'мм') return 1;
+  if (unit === 'см') return 0.1;
+  if (unit === 'мл') return 5;
+  return 0.1;
+}
+
 // ---------- Конфигурация протоколов 6 систем ----------
-// field: { key, title, unit, ref?, refMale?, compute? }
+// field: { key, title, unit, ref?, compute? }
 // section: { title, fields, option? } — option: показывается только при включённом подпункте
 
 const F = (key, title, unit, ref, extra) => ({ key, title, unit, ref: ref || null, ...(extra || {}) });
@@ -159,7 +226,7 @@ export const SYSTEM_CONFIG = {
   abdomen: {
     options: [
       { key: 'liver', title: 'Печень', defaultOn: true },
-      { key: 'gallbladder', title: 'Жёлчный пузырь', defaultOn: true },
+      { key: 'gallbladder', title: 'Желчный пузырь', defaultOn: true },
       { key: 'pancreas', title: 'Поджелудочная железа', defaultOn: true },
       { key: 'spleen', title: 'Селезёнка', defaultOn: true },
     ],
@@ -169,9 +236,10 @@ export const SYSTEM_CONFIG = {
         F('liver_right_thick', 'Правая доля, толщина', 'мм', 'liver_right_thick'),
         F('liver_left_kkr', 'Левая доля, ККР', 'мм', 'liver_left_kkr'),
         F('liver_left_thick', 'Левая доля, толщина', 'мм', 'liver_left_thick'),
+        F('liver_caudate', 'Хвостатая доля', 'мм', 'liver_caudate'),
         F('portal_vein', 'Воротная вена', 'мм', 'portal_vein'),
       ] },
-      { title: 'Жёлчный пузырь', option: 'gallbladder', fields: [
+      { title: 'Желчный пузырь', option: 'gallbladder', fields: [
         F('gb_length', 'Длина', 'мм', 'gb_length'),
         F('gb_width', 'Ширина', 'мм', 'gb_width'),
         F('gb_wall', 'Толщина стенки', 'мм', 'gb_wall'),
@@ -253,7 +321,6 @@ export const SYSTEM_CONFIG = {
       { title: 'Перешеек и общий объём', fields: [
         F('isthmus', 'Перешеек', 'мм', 'thyroid_isthmus'),
         F('total_volume', 'Общий объём', 'мл', 'thyroid_volume', {
-          refMale: 'thyroid_volume_m',
           compute: (f) => {
             const r = thyroidLobe(f, 'tr'), l = thyroidLobe(f, 'tl');
             if (r === null && l === null) return null;
@@ -268,7 +335,23 @@ export const SYSTEM_CONFIG = {
   },
 };
 
-export const refKeyFor = (field, gender) => (gender === 'М' && field.refMale ? field.refMale : field.ref);
+/** Единая карта подписей: «система:ключ» → { system, section, field }. */
+export const FIELD_INDEX = (() => {
+  const map = new Map();
+  for (const s of SYSTEMS) {
+    for (const section of SYSTEM_CONFIG[s.id].sections) {
+      for (const field of section.fields) map.set(s.id + ':' + field.key, { system: s.id, section: section.title, field });
+    }
+  }
+  return map;
+})();
+
+/** Подпись измерения для графиков, сводок и сравнения: «Печень — Правая доля, КВР». */
+export function fieldLabel(systemId, key) {
+  const entry = FIELD_INDEX.get(systemId + ':' + key);
+  if (!entry) return key;
+  return entry.section + ' — ' + entry.field.title;
+}
 
 export function isOptionOn(systemId, block, key) {
   if (block.options && key in block.options) return !!block.options[key];
@@ -282,24 +365,35 @@ export function visibleSections(block) {
   return cfg.sections.filter((s) => !s.option || isOptionOn(block.system, block, s.option));
 }
 
-/** Строки результатов — общие для экрана и PDF. */
-export function blockResults(block, refs, gender) {
+/** Число в поле: введённое или рассчитанное. null — пусто. */
+export function fieldNumber(block, field) {
+  const typed = parseNum((block.fields || {})[field.key]);
+  if (typed !== null) return typed;
+  if (field.compute) {
+    const c = field.compute(block.fields || {});
+    if (c !== null && c !== undefined) return c;
+  }
+  return null;
+}
+
+/** Строки результатов — общие для экрана и PDF. index — из buildRefIndex, info — из patientInfo. */
+export function blockResults(block, index, info) {
   const out = [];
   for (const section of visibleSections(block)) {
     const lines = [];
     for (const field of section.fields) {
-      const refKey = refKeyFor(field, gender);
-      const ref = refKey ? refs.get(refKey) || null : null;
+      const ref = pickReference(index, field.ref, info);
       const raw = String((block.fields || {})[field.key] ?? '').trim();
       const v = parseNum(raw);
+      const base = { key: field.key, title: field.title, ref };
       if (v !== null) {
-        lines.push({ title: field.title, value: fmtNum(v), unit: field.unit, status: evaluate(ref, v), ref, computed: false });
+        lines.push({ ...base, value: fmtNum(v), number: v, unit: field.unit, status: evaluate(ref, v), computed: false });
       } else if (raw) {
-        lines.push({ title: field.title, value: raw, unit: '', status: 'unknown', ref, computed: false });
+        lines.push({ ...base, value: raw, number: null, unit: '', status: 'unknown', computed: false });
       } else if (field.compute) {
         const c = field.compute(block.fields || {});
         if (c !== null && c !== undefined) {
-          lines.push({ title: field.title, value: fmtNum(c), unit: field.unit, status: evaluate(ref, c), ref, computed: true });
+          lines.push({ ...base, value: fmtNum(c), number: c, unit: field.unit, status: evaluate(ref, c), computed: true });
         }
       }
     }
@@ -307,6 +401,19 @@ export function blockResults(block, refs, gender) {
     out.push({ title: section.title, lines });
   }
   return out;
+}
+
+/** Сводный статус блока: сколько измерений вне нормы и сколько оценено. */
+export function blockStatus(block, index, info) {
+  let abnormal = 0, evaluated = 0;
+  for (const section of blockResults(block, index, info)) {
+    for (const line of section.lines) {
+      if (line.status === 'unknown') continue;
+      evaluated += 1;
+      if (line.status !== 'normal') abnormal += 1;
+    }
+  }
+  return { abnormal, evaluated };
 }
 
 export function emptyBlock(systemId) {
@@ -333,6 +440,7 @@ export const studyShort = (appt) => enabledBlocks(appt).map((b) => systemById(b.
 export function filledCount(block) {
   return Object.entries(block.fields || {}).filter(([k, v]) => k !== DESCRIPTION_KEY && String(v).trim()).length;
 }
+export const hasContent = (block) => filledCount(block) > 0 || String((block.fields || {})[DESCRIPTION_KEY] || '').trim() !== '';
 
 export function patientName(p) {
   if (!p) return '—';
@@ -346,7 +454,47 @@ export function birthText(p) {
   return `${z(p.birthDay)}/${z(p.birthMonth)}/${z(p.birthYear, 4)}`;
 }
 
-// ---------- Шаблоны заключений ----------
+/** Индекс массы тела: рост в см, вес в кг. */
+export function bmi(height, weight) {
+  const h = parseNum(height), w = parseNum(weight);
+  if (!(h > 50 && h < 260 && w > 2 && w < 400)) return null;
+  return Math.round((w / ((h / 100) * (h / 100))) * 10) / 10;
+}
+
+/** Датчики хранятся одной строкой через «; ». */
+export const splitProbes = (s) => String(s || '').split(';').map((x) => x.trim()).filter(Boolean);
+export const joinProbes = (list) => (list || []).map((x) => String(x).trim()).filter(Boolean).join('; ');
+
+// ---------- Автозаключение по измерениям ----------
+
+/** «Правая доля, КВР» → «правая доля, КВР»: в середине фразы, не трогая сокращения. */
+export const lowerFirst = (text) => (text ? text.charAt(0).toLowerCase() + text.slice(1) : text);
+
+/** Черновик заключения: по каждой системе — «в пределах нормы» или список отклонений. Врач правит текст. */
+export function autoConclusion(blocks, index, info) {
+  const lines = [];
+  for (const block of normalizeBlocks(blocks).filter((b) => b.enabled)) {
+    const system = systemById(block.system);
+    const deviations = [];
+    let evaluated = 0;
+    for (const section of blockResults(block, index, info)) {
+      for (const line of section.lines) {
+        if (line.status === 'unknown') continue;
+        evaluated += 1;
+        if (line.status !== 'normal') {
+          const where = section.title === system.title ? '' : lowerFirst(section.title) + ': ';
+          deviations.push(`${where}${lowerFirst(line.title)} ${line.value}${line.unit ? ' ' + line.unit : ''} — ${STATUS[line.status].title} (${rangeText(line.ref)})`);
+        }
+      }
+    }
+    if (evaluated === 0) continue;
+    if (deviations.length === 0) lines.push(`${system.title}: измеренные показатели в пределах справочных значений.`);
+    else lines.push(`${system.title}: ${deviations.join('; ')}.`);
+  }
+  return lines.join('\n');
+}
+
+// ---------- Шаблоны ----------
 
 export const DEFAULT_TEMPLATES = [
   ['ОБП — норма', 'Эхографических признаков патологии органов брюшной полости не выявлено.', 'abdomen'],
@@ -362,9 +510,67 @@ export const DEFAULT_TEMPLATES = [
   ['Рекомендация', 'Рекомендована консультация лечащего врача.', ''],
 ];
 
+/** Справочник патологий: готовые формулировки для заключения. */
+export const PATHOLOGY_SEED = [
+  ['Желчнокаменная болезнь', 'Эхографические признаки желчнокаменной болезни: в просвете желчного пузыря определяются гиперэхогенные образования с акустической тенью размером ___ мм.', 'abdomen'],
+  ['Гепатомегалия', 'Эхографические признаки гепатомегалии.', 'abdomen'],
+  ['Жировой гепатоз', 'Эхографические признаки диффузных изменений печени по типу жирового гепатоза.', 'abdomen'],
+  ['Хронический холецистит', 'Эхографические признаки хронического холецистита: стенка желчного пузыря утолщена до ___ мм, уплотнена.', 'abdomen'],
+  ['Хронический панкреатит', 'Эхографические признаки диффузных изменений поджелудочной железы по типу хронического панкреатита.', 'abdomen'],
+  ['Спленомегалия', 'Эхографические признаки спленомегалии.', 'abdomen'],
+  ['Нефролитиаз', 'Эхографические признаки нефролитиаза: в чашечно-лоханочной системе ___ почки определяется конкремент размером ___ мм.', 'kidneys'],
+  ['Киста почки', 'Эхографические признаки простой кисты ___ почки размером ___ мм.', 'kidneys'],
+  ['Пиелоэктазия', 'Эхографические признаки пиелоэктазии ___ почки: лоханка расширена до ___ мм.', 'kidneys'],
+  ['Узловой зоб', 'Эхографические признаки узлового зоба: в ___ доле определяется узловое образование размером ___ мм (TI-RADS ___).', 'thyroid'],
+  ['Аденома простаты', 'Эхографические признаки доброкачественной гиперплазии предстательной железы, объём ___ мл.', 'prostate'],
+  ['Лимфаденопатия', 'Эхографические признаки лимфаденопатии ___ группы: узлы увеличены до ___ мм.', 'lymphNodes'],
+];
+
+/** Стартовые шаблоны приёма. Числа измерений не заложены — врач вносит свои и может сохранить собственный шаблон. */
+export const APPT_TEMPLATE_SEED = [
+  {
+    title: 'ОБП — норма',
+    systems: { abdomen: 'Печень: контуры ровные, эхогенность обычная, структура однородная. Желчный пузырь: стенка не утолщена, просвет гомогенный. Поджелудочная железа: контуры ровные, структура однородная. Селезёнка: структура однородная.' },
+    conclusion: 'Эхографических признаков патологии органов брюшной полости не выявлено.',
+  },
+  {
+    title: 'Почки — норма',
+    systems: { kidneys: 'Почки расположены типично, контуры ровные, паренхима однородная, чашечно-лоханочная система не расширена, конкременты не определяются.' },
+    conclusion: 'Эхографических признаков патологии почек не выявлено.',
+  },
+  {
+    title: 'Щитовидка — норма',
+    systems: { thyroid: 'Щитовидная железа расположена типично, контуры ровные, эхогенность обычная, структура однородная, узловые образования не определяются.' },
+    conclusion: 'Эхографических признаков патологии щитовидной железы не выявлено.',
+  },
+];
+
 export const PROBE_PRESETS = [
   'Конвексный, 2–5 МГц',
   'Линейный, 5–12 МГц',
   'Микроконвексный, 4–8 МГц',
   'Внутриполостной, 4–9 МГц',
 ];
+
+// ---------- Имена файлов ----------
+
+const TRANSLIT = {
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm',
+  н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'kh', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'shch',
+  ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+};
+
+/** «Иванов» → «Ivanov» — для имён файлов. */
+export function translit(text) {
+  let out = '';
+  for (const ch of String(text || '')) {
+    const lower = ch.toLowerCase();
+    if (lower in TRANSLIT) {
+      const t = TRANSLIT[lower];
+      out += ch === lower ? t : t.charAt(0).toUpperCase() + t.slice(1);
+    } else if (/[0-9A-Za-z_-]/.test(ch)) {
+      out += ch;
+    }
+  }
+  return out;
+}

@@ -8,9 +8,10 @@ import { DialogHost, ToastHost } from './ui.js';
 import { CalendarScreen, DayScreen } from './views/calendar.js';
 import { EditScreen, DetailScreen } from './views/appointment.js';
 import { ReferencesScreen, ReferenceEditScreen, ExchangeScreen, VersionsScreen } from './views/references.js';
-import { StatsScreen, TemplatesScreen, SettingsScreen } from './views/other.js';
+import { PatientHistoryScreen, TrendScreen, CompareScreen, SearchScreen } from './views/patient.js';
+import { StatsScreen, TemplatesScreen, SettingsScreen, ClinicScreen, BackupScreen, HelpScreen, Onboarding } from './views/other.js';
 
-window.UZI_VERSION = '1.0.0';
+window.UZI_VERSION = '2.0.0';
 
 function applyTheme() {
   const s = getSettings();
@@ -31,13 +32,20 @@ function route(path) {
   if (a === 'new') return html`<${EditScreen} key=${'new' + (b || '')} dayKeyValue=${b} />`;
   if (a === 'edit' && b) return html`<${EditScreen} key=${'edit' + b} id=${b} />`;
   if (a === 'a' && b) return html`<${DetailScreen} key=${'a' + b} id=${b} />`;
+  if (a === 'patient' && b && c === 'trend') return html`<${TrendScreen} key=${'trend' + b} id=${b} />`;
+  if (a === 'patient' && b && c === 'compare') return html`<${CompareScreen} key=${'cmp' + b} id=${b} />`;
+  if (a === 'patient' && b) return html`<${PatientHistoryScreen} key=${'p' + b} id=${b} />`;
+  if (a === 'search') return html`<${SearchScreen} />`;
   if (a === 'refs' && b === 'exchange') return html`<${ExchangeScreen} />`;
   if (a === 'refs' && b === 'versions') return html`<${VersionsScreen} />`;
   if (a === 'refs' && !c) return html`<${ReferencesScreen} />`;
   if (a === 'ref' && b) return html`<${ReferenceEditScreen} key=${'ref' + b} refKey=${b} />`;
   if (a === 'stats') return html`<${StatsScreen} />`;
   if (a === 'templates') return html`<${TemplatesScreen} />`;
+  if (a === 'settings' && b === 'clinic') return html`<${ClinicScreen} />`;
+  if (a === 'settings' && b === 'backup') return html`<${BackupScreen} />`;
   if (a === 'settings') return html`<${SettingsScreen} />`;
+  if (a === 'help') return html`<${HelpScreen} />`;
   return html`<${CalendarScreen} />`;
 }
 
@@ -51,7 +59,10 @@ function App() {
     if (mq.addEventListener) mq.addEventListener('change', fn);
     return () => { if (mq.removeEventListener) mq.removeEventListener('change', fn); };
   }, []);
-  return html`${route(path)}<${DialogHost} /><${ToastHost} />`;
+  return html`
+    ${route(path)}
+    ${!getSettings().onboardingDone && html`<${Onboarding} />`}
+    <${DialogHost} /><${ToastHost} />`;
 }
 
 function clear(el) {

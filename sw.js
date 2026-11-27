@@ -1,6 +1,6 @@
 // Работа без интернета: файлы приложения хранятся в кеше телефона.
 // При выходе новой версии поменяйте номер ниже — приложение обновится при следующем запуске.
-const VERSION = 'uzi-v1.0.0';
+const VERSION = 'uzi-v2.0.0';
 
 const FILES = [
   './',
@@ -11,6 +11,7 @@ const FILES = [
   'js/db.js',
   'js/exchange.js',
   'js/i18n.js',
+  'js/i18n-extra.js',
   'js/models.js',
   'js/ops.js',
   'js/pdf.js',
@@ -21,6 +22,7 @@ const FILES = [
   'js/views/appointment.js',
   'js/views/references.js',
   'js/views/other.js',
+  'js/views/patient.js',
   'vendor/standalone.module.js',
   'vendor/pdfmake.min.js',
   'vendor/vfs_fonts.js',

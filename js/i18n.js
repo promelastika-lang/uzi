@@ -1,6 +1,7 @@
 // Перевод интерфейса: русский и английский.
 // Медицинское содержимое (органы, измерения, нормы) и PDF — всегда на русском.
 import { getSettings } from './db.js';
+import { EXTRA } from './i18n-extra.js';
 
 const RU = {
   'schedule': 'Расписание',
@@ -86,7 +87,7 @@ const RU = {
   'system.prostate': 'Предстательная железа',
   'system.thyroid': 'Щитовидная железа',
   'system.configure': 'Настроить протокол',
-  'system.filled': 'заполнено: {0}',
+  'system.filled': '{0} изм.',
   'systems.footer': 'Включите нужные системы и внесите измерения.',
 
   'study.name': 'Название исследования',
@@ -349,7 +350,7 @@ const EN = {
   'system.prostate': 'Prostate',
   'system.thyroid': 'Thyroid',
   'system.configure': 'Set up protocol',
-  'system.filled': 'filled: {0}',
+  'system.filled': '{0} filled',
   'systems.footer': 'Turn on the systems you need and enter the measurements.',
 
   'study.name': 'Study name',
@@ -527,6 +528,11 @@ const EN = {
   'install.short': 'Tap Share at the bottom of Safari and choose “Add to Home Screen”.',
   'install.steps': '1. Open this page in Safari.\n2. Tap the Share button (a square with an arrow up).\n3. Choose “Add to Home Screen” and tap Add.\n4. Launch the app from its icon — it works offline.',
 };
+
+for (const key of Object.keys(EXTRA)) {
+  RU[key] = EXTRA[key][0];
+  EN[key] = EXTRA[key][1];
+}
 
 const DICTS = { ru: RU, en: EN };
 

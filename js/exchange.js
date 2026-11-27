@@ -1,11 +1,18 @@
-// Справочник норм: экспорт/импорт JSON, сравнение, версии. Полная резервная копия базы.
-import { data, list, put, putMany, replaceStore, replaceEverything, getSettings, setSettings, getFlag, setFlag, STORES } from './db.js';
-import { REFERENCE_SEED, SEED_VERSION, DEFAULT_TEMPLATES, formatRange } from './models.js';
+// Справочник норм: экспорт/импорт JSON, сравнение, версии. Перенос данных между версиями. Резервная копия базы.
+import {
+  data, list, put, putMany, replaceStore, replaceEverything, mergeEverything,
+  getSettings, setSettings, getFlag, setFlag, STORES, KEYS,
+} from './db.js';
+import {
+  REFERENCE_SEED, SEED_VERSION, DEFAULT_TEMPLATES, PATHOLOGY_SEED, APPT_TEMPLATE_SEED, SYSTEMS,
+  DESCRIPTION_KEY, formatRange, appliesText, emptyBlock,
+} from './models.js';
 import { uid, fmtNum, fmtDateTime } from './util.js';
 
 export const EXPORT_VERSION = 1;
+const numOrNull = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
 
-/** Параметр в формате обмена (порядок полей как в ТЗ). */
+/** Параметр в формате обмена. */
 export function toItem(r) {
   return {
     key: r.key,
@@ -17,6 +24,10 @@ export function toItem(r) {
     source: r.source || '',
     sourcePage: r.sourcePage || '',
     note: r.note || '',
+    variantOf: r.variantOf || '',
+    gender: r.gender || '',
+    minAge: r.minAge ?? null,
+    maxAge: r.maxAge ?? null,
   };
 }
 
@@ -28,7 +39,7 @@ export function makeExport(items) {
 
 export const exportJSON = (items) => JSON.stringify(makeExport(items), null, 2);
 
-/** Разбор и проверка файла. Повторяющиеся ключи — берётся последнее значение. */
+/** Разбор и проверка файла. Принимает и { items: [...] }, и просто массив. Повторы ключей — берётся последнее значение. */
 export function parseExport(text, requireItems = true) {
   let obj;
   try {
@@ -36,6 +47,7 @@ export function parseExport(text, requireItems = true) {
   } catch (e) {
     throw new Error('Файл не похож на JSON.');
   }
+  if (Array.isArray(obj)) obj = { version: EXPORT_VERSION, exportedAt: '', items: obj };
   if (!obj || !Array.isArray(obj.items)) throw new Error('В файле нет списка items — это не экспорт справочника.');
   if (typeof obj.version === 'number' && obj.version > EXPORT_VERSION) {
     throw new Error(`Версия файла ${obj.version} не поддерживается (ожидается ${EXPORT_VERSION} или ниже).`);
@@ -43,12 +55,18 @@ export function parseExport(text, requireItems = true) {
   if (requireItems && obj.items.length === 0) throw new Error('В файле нет параметров.');
 
   const bad = [];
-  const toNum = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
   const items = obj.items.map((raw) => {
-    const item = toItem({ ...raw, minValue: toNum(raw.minValue), maxValue: toNum(raw.maxValue) });
+    const item = toItem({
+      ...raw,
+      minValue: numOrNull(raw.minValue), maxValue: numOrNull(raw.maxValue),
+      minAge: numOrNull(raw.minAge), maxAge: numOrNull(raw.maxAge),
+    });
     item.key = String(item.key || '').trim();
-    const badNum = (item.minValue !== null && !Number.isFinite(item.minValue)) || (item.maxValue !== null && !Number.isFinite(item.maxValue));
-    const badRange = item.minValue !== null && item.maxValue !== null && item.minValue > item.maxValue;
+    if (item.gender !== 'М' && item.gender !== 'Ж') item.gender = '';
+    const nums = [item.minValue, item.maxValue, item.minAge, item.maxAge];
+    const badNum = nums.some((n) => n !== null && !Number.isFinite(n));
+    const badRange = (item.minValue !== null && item.maxValue !== null && item.minValue > item.maxValue)
+      || (item.minAge !== null && item.maxAge !== null && item.minAge > item.maxAge);
     if (!item.key || badNum || badRange) bad.push(item.key || '(без key)');
     return item;
   });
@@ -76,7 +94,12 @@ const FIELDS = [
   ['source', 'ref.field.source'],
   ['sourcePage', 'ref.field.page'],
   ['note', 'ref.field.note'],
+  ['variantOf', 'ref.field.variant'],
+  ['gender', 'ref.field.gender'],
+  ['minAge', 'ref.field.min_age'],
+  ['maxAge', 'ref.field.max_age'],
 ];
+const NUMERIC = new Set(['minValue', 'maxValue', 'minAge', 'maxAge']);
 
 const show = (v) => (v === null || v === undefined || v === '' ? '—' : typeof v === 'number' ? fmtNum(v) : String(v));
 
@@ -92,8 +115,8 @@ export function diffItems(current, incoming) {
     }
     const changes = [];
     for (const [f, label] of FIELDS) {
-      const a = old[f] ?? (f.endsWith('Value') ? null : '');
-      const b = item[f] ?? (f.endsWith('Value') ? null : '');
+      const a = old[f] ?? (NUMERIC.has(f) ? null : '');
+      const b = item[f] ?? (NUMERIC.has(f) ? null : '');
       if (a !== b) changes.push({ field: label, old: show(a), new: show(b) });
     }
     entries.push({ key: item.key, kind: changes.length ? 'changed' : 'unchanged', current: old, incoming: item, changes });
@@ -158,23 +181,100 @@ export async function resetToDefaults() {
   await applyImport(REFERENCE_SEED, 'replaceAll');
 }
 
-export const seedSummary = (s) => `${s.title}: ${formatRange(s.minValue, s.maxValue, s.unit)}`;
+export function seedSummary(s) {
+  const who = appliesText(s);
+  return `${s.title}${who ? ' (' + who + ')' : ''}: ${formatRange(s.minValue, s.maxValue, s.unit)}`;
+}
 
-// ---------- Первичное заполнение ----------
+// ---------- Первичное заполнение и перенос данных между версиями ----------
+
+const DATA_VERSION = 2;
+
+/** Шаблон приёма из стартового описания: включённые системы с текстом описания, без чисел. */
+function apptTemplateFromSeed(seed) {
+  const blocks = SYSTEMS.map((s) => {
+    const b = emptyBlock(s.id);
+    if (seed.systems[s.id]) {
+      b.enabled = true;
+      b.fields[DESCRIPTION_KEY] = seed.systems[s.id];
+    }
+    return b;
+  });
+  return {
+    id: uid(), title: seed.title, usSystemName: '', probeType: '', blocks,
+    significantInfo: '', additionalInfo: '', conclusion: seed.conclusion, createdAt: new Date().toISOString(),
+  };
+}
+
+/** Перенос данных версии 1 → 2. Можно выполнять повторно: ничего не испортит. */
+async function migrateToV2() {
+  // «Желчный» без «ё» и нормы по полу для щитовидной железы.
+  const changed = [];
+  for (const r of data.references.values()) {
+    let next = null;
+    if (r.organ === 'Жёлчный пузырь') next = { ...(next || r), organ: 'Желчный пузырь' };
+    if (r.key === 'thyroid_volume' && !r.gender && !r.variantOf && /\(Ж\)/.test(r.title || '')) {
+      next = { ...(next || r), title: 'Общий объём', gender: 'Ж' };
+    }
+    if (r.key === 'thyroid_volume_m' && !r.variantOf && /\(М\)/.test(r.title || '')) {
+      next = { ...(next || r), title: 'Общий объём', variantOf: 'thyroid_volume', gender: 'М' };
+    }
+    if (next) changed.push(next);
+  }
+  await putMany('references', changed);
+
+  const fixedTemplates = [];
+  for (const x of data.templates.values()) {
+    const title = String(x.title || '').replace(/Жёлчн/g, 'Желчн').replace(/жёлчн/g, 'желчн');
+    const text = String(x.text || '').replace(/Жёлчн/g, 'Желчн').replace(/жёлчн/g, 'желчн');
+    if (title !== x.title || text !== x.text) fixedTemplates.push({ ...x, title, text });
+  }
+  await putMany('templates', fixedTemplates);
+
+  // Шапка протокола из настроек версии 1 становится первым профилем клиники.
+  const s = getSettings();
+  if (data.clinics.size === 0 && ((s.orgName || '').trim() || (s.orgAddress || '').trim())) {
+    await put('clinics', {
+      id: uid(), name: (s.orgName || '').trim(), address: (s.orgAddress || '').trim(),
+      phone: '', email: '', logo: '', isActive: true,
+    });
+  }
+
+  // Аппарат и датчики из старых записей — в список «недавних».
+  const entries = new Map();
+  for (const a of data.appointments.values()) {
+    const at = a.date || new Date().toISOString();
+    const remember = (kind, name) => {
+      const n = String(name || '').trim();
+      if (!n) return;
+      const id = kind + ':' + n;
+      if (!data.catalog.has(id) && (!entries.has(id) || entries.get(id).lastUsedAt < at)) entries.set(id, { id, kind, name: n, lastUsedAt: at });
+    };
+    remember('machine', a.usSystemName);
+    String(a.probeType || '').split(';').forEach((p) => remember('probe', p));
+  }
+  await putMany('catalog', Array.from(entries.values()));
+}
 
 export async function ensureSeed() {
+  // 1. Справочник норм: первое заполнение и новые ключи при обновлении приложения.
   const stored = Number(getFlag('refSeedVersion') || 0);
   if (stored < SEED_VERSION) {
     const existing = sortedRefs();
     const keys = new Set(existing.map((r) => r.key));
-    let next = existing.reduce((m, r) => Math.max(m, r.sortIndex ?? 0), -1) + 1;
+    const next = existing.reduce((m, r) => Math.max(m, r.sortIndex ?? 0), -1) + 1;
     const missing = REFERENCE_SEED.filter((s) => !keys.has(s.key));
     if (missing.length) {
-      await putMany('references', missing.map((s, i) => ({ ...toItem(s), sortIndex: existing.length ? next + i : REFERENCE_SEED.indexOf(s) })));
+      await putMany('references', missing.map((s, i) => ({
+        ...toItem(s),
+        sortIndex: existing.length ? next + i : REFERENCE_SEED.indexOf(s),
+      })));
     }
     if (!existing.length) await snapshot('Исходные значения');
     setFlag('refSeedVersion', SEED_VERSION);
   }
+
+  // 2. Шаблоны заключений.
   if (!getFlag('templatesSeeded')) {
     if (data.templates.size === 0) {
       const now = Date.now();
@@ -184,12 +284,30 @@ export async function ensureSeed() {
     }
     setFlag('templatesSeeded', 1);
   }
+
+  // 3. Перенос данных прежней версии.
+  if (Number(getFlag('dataVersion') || 0) < DATA_VERSION) {
+    await migrateToV2();
+    setFlag('dataVersion', DATA_VERSION);
+  }
+
+  // 4. Справочник патологий и шаблоны приёма.
+  if (!getFlag('pathologiesSeeded')) {
+    if (data.pathologies.size === 0) {
+      await putMany('pathologies', PATHOLOGY_SEED.map(([title, text, system]) => ({ id: uid(), title, text, system })));
+    }
+    setFlag('pathologiesSeeded', 1);
+  }
+  if (!getFlag('apptTemplatesSeeded')) {
+    if (data.apptTemplates.size === 0) await putMany('apptTemplates', APPT_TEMPLATE_SEED.map(apptTemplateFromSeed));
+    setFlag('apptTemplatesSeeded', 1);
+  }
 }
 
 // ---------- Полная резервная копия ----------
 
 export function makeBackup() {
-  const out = { app: 'uzi-protocols', backupVersion: 1, exportedAt: new Date().toISOString(), settings: getSettings() };
+  const out = { app: 'uzi-protocols', backupVersion: 2, exportedAt: new Date().toISOString(), settings: getSettings() };
   for (const s of STORES) out[s] = list(s);
   return JSON.stringify(out, null, 1);
 }
@@ -200,22 +318,55 @@ export function parseBackup(text) {
   if (!obj || obj.app !== 'uzi-protocols' || !Array.isArray(obj.appointments)) {
     throw new Error('Это не резервная копия «УЗИ-протоколов».');
   }
+  for (const s of STORES) {
+    if (obj[s] !== undefined && !Array.isArray(obj[s])) throw new Error('Копия повреждена: раздел «' + s + '» не является списком.');
+    const key = KEYS[s];
+    if ((obj[s] || []).some((o) => !o || o[key] === undefined || o[key] === null || o[key] === '')) {
+      throw new Error('Копия повреждена: в разделе «' + s + '» есть записи без идентификатора.');
+    }
+  }
   return obj;
 }
 
-export async function restoreBackup(obj) {
-  await replaceEverything(obj);
-  if (obj.settings && typeof obj.settings === 'object') setSettings(obj.settings);
-  setFlag('refSeedVersion', SEED_VERSION);
-  setFlag('templatesSeeded', 1);
+/** Сколько записей в копии новые, а сколько уже есть в базе (по идентификатору). */
+export function backupStats(obj) {
+  const count = (s) => {
+    const items = obj[s] || [];
+    const existing = items.filter((o) => data[s].has(o[KEYS[s]])).length;
+    return { total: items.length, existing, fresh: items.length - existing };
+  };
+  return {
+    exportedAt: obj.exportedAt || '',
+    appointments: count('appointments'),
+    patients: count('patients'),
+    references: count('references'),
+    templates: count('templates'),
+  };
 }
 
-export function backupStats(obj) {
-  return {
-    patients: (obj.patients || []).length,
-    appointments: (obj.appointments || []).length,
-    references: (obj.references || []).length,
-    templates: (obj.templates || []).length,
-    exportedAt: obj.exportedAt || '',
-  };
+/**
+ * Восстановление из копии.
+ * replaceAll — заменить всё; merge — обновить совпадающие и добавить новые; skipExisting — добавить только новые.
+ */
+export async function restoreBackup(obj, strategy = 'replaceAll') {
+  if (strategy === 'replaceAll') {
+    await replaceEverything(obj);
+    if (obj.settings && typeof obj.settings === 'object') setSettings(obj.settings);
+    setFlag('refSeedVersion', obj.backupVersion >= 2 ? SEED_VERSION : 1);
+    setFlag('templatesSeeded', 1);
+    setFlag('dataVersion', obj.backupVersion >= 2 ? DATA_VERSION : 1);
+    if (!(obj.backupVersion >= 2)) {
+      setFlag('pathologiesSeeded', '');
+      setFlag('apptTemplatesSeeded', '');
+    }
+    await ensureSeed(); // старую копию доводим до текущей версии данных
+    return;
+  }
+  const partial = {};
+  for (const s of STORES) {
+    const items = obj[s] || [];
+    partial[s] = strategy === 'merge' ? items : items.filter((o) => !data[s].has(o[KEYS[s]]));
+  }
+  await mergeEverything(partial);
+  await migrateToV2();
 }

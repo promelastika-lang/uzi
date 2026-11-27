@@ -27,6 +27,17 @@ const PATHS = {
   swap: 'M7 4v16M7 4L3 8M7 4l4 4M17 20V4M17 20l-4-4M17 20l4-4',
   check: 'M5 12l5 5 9-10',
   info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v6M12 7.5v.5',
+  search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-4-4',
+  spark: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16z',
+  copy: 'M9 9h10v11H9V9zM5 15V4h10',
+  minus: 'M5 12h14',
+  close: 'M6 6l12 12M18 6L6 18',
+  history: 'M4 12a8 8 0 1 0 2.4-5.7M4 4v5h5M12 8v4l3 2',
+  warn: 'M12 4l9 16H3L12 4zM12 10v4M12 17v.5',
+  building: 'M5 21V4h9v17M14 9h5v12M8 8h3M8 12h3M8 16h3M3 21h18',
+  help: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 16.5v.5',
+  tomorrow: 'M7 3v3M17 3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM12 12v5M9.5 14.5h5',
+  compare: 'M8 4v16M16 4v16M4 8l4-4 4 4M12 16l4 4 4-4',
 };
 
 export function Icon({ name, size = 22 }) {
@@ -48,10 +59,11 @@ const TABS = [
  * Каркас экрана: шапка с заголовком, кнопкой «Назад» и действиями.
  * backTo — запасной адрес для кнопки «Назад»; tabs — показывать нижнюю панель.
  */
-export function Screen({ title, backTo, left, right, tabs, children }) {
+export function Screen({ title, backTo, left, right, tabs, subheader, children }) {
   const path = currentPath();
   return html`
     <div class="screen">
+      <div class="nav-wrap">
       <header class="nav">
         <div class="nav-side nav-left">
           ${backTo !== undefined
@@ -61,6 +73,8 @@ export function Screen({ title, backTo, left, right, tabs, children }) {
         <h1 class="nav-title">${title}</h1>
         <div class="nav-side nav-right">${right}</div>
       </header>
+      ${subheader}
+      </div>
       <main class=${'content' + (tabs ? ' with-tabs' : '')}>${children}</main>
       ${tabs && html`
         <nav class="tabbar">
@@ -167,6 +181,14 @@ export function Segmented({ options, value, onChange }) {
   </div>`;
 }
 
+/** Горизонтальный ряд кнопок-чипов (недавние аппараты, датчики). */
+export function Chips({ items, onPick, active }) {
+  if (!items || !items.length) return null;
+  return html`<div class="chips">
+    ${items.map((x) => html`<button key=${x} class=${'chip' + (active && active.includes(x) ? ' active' : '')} onClick=${() => onPick(x)}>${x}</button>`)}
+  </div>`;
+}
+
 export function Empty({ icon = 'info', text }) {
   return html`<div class="empty"><${Icon} name=${icon} size=${44} /><p>${text}</p></div>`;
 }
@@ -178,7 +200,7 @@ export function SearchBox({ value, onInput, placeholder }) {
 
 // ---------- Модальное окно на весь экран ----------
 
-export function Sheet({ title, onClose, onDone, doneLabel, doneDisabled, closeLabel, children }) {
+export function Sheet({ title, onClose, onDone, doneLabel, doneDisabled, closeLabel, left, children }) {
   useEffect(() => {
     document.body.classList.add('sheet-open');
     return () => document.body.classList.remove('sheet-open');
@@ -189,6 +211,7 @@ export function Sheet({ title, onClose, onDone, doneLabel, doneDisabled, closeLa
         <header class="nav">
           <div class="nav-side nav-left">
             ${onClose && html`<button class="nav-btn" onClick=${onClose}><span>${closeLabel || t('common.cancel')}</span></button>`}
+            ${!onClose && left}
           </div>
           <h1 class="nav-title">${title}</h1>
           <div class="nav-side nav-right">
@@ -218,6 +241,11 @@ export function promptDialog({ title, message, placeholder, value = '' }) {
   return new Promise((resolve) => setDialog({ kind: 'prompt', title, message, placeholder, value, resolve }));
 }
 
+/** Выбор из нескольких вариантов. options: [{ label, value, destructive }]. Возвращает value или null при отмене. */
+export function choiceDialog({ title, message, options, cancelLabel }) {
+  return new Promise((resolve) => setDialog({ kind: 'choice', title, message, options, cancelLabel, resolve }));
+}
+
 export function DialogHost() {
   const [d, setD] = useState(dialogState);
   const [text, setText] = useState('');
@@ -235,13 +263,19 @@ export function DialogHost() {
         ${d.message && html`<p>${d.message}</p>`}
         ${d.kind === 'prompt' && html`<input class="dialog-input" type="text" value=${text} placeholder=${d.placeholder || ''}
           onInput=${(e) => setText(e.target.value)} />`}
-        <div class="dialog-actions">
+        ${d.kind === 'choice' && html`
+          <div class="dialog-choices">
+            ${d.options.map((o, i) => html`<button key=${i} class=${(i === 0 ? 'primary' : '') + (o.destructive ? ' destructive' : '')}
+              onClick=${() => close(o.value)}>${o.label}</button>`)}
+            <button onClick=${() => close(null)}>${d.cancelLabel || t('common.cancel')}</button>
+          </div>`}
+        ${d.kind !== 'choice' && html`<div class="dialog-actions">
           ${d.kind !== 'alert' && html`<button onClick=${() => close(d.kind === 'prompt' ? null : false)}>${t('common.cancel')}</button>`}
           <button class=${'primary' + (d.destructive ? ' destructive' : '')}
             onClick=${() => close(d.kind === 'prompt' ? text : true)}>
             ${d.confirmLabel || t('common.ok')}
           </button>
-        </div>
+        </div>`}
       </div>
     </div>`;
 }
@@ -250,16 +284,22 @@ export function DialogHost() {
 
 let toastTimer = null;
 const toastListeners = new Set();
-export function toast(message) {
-  toastListeners.forEach((fn) => fn(message));
+/** Короткое сообщение внизу экрана. action: { label, run } — кнопка (например «Отменить»), тогда висит 5 секунд. */
+export function toast(message, action) {
+  const payload = { message, action: action || null };
+  toastListeners.forEach((fn) => fn(payload));
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toastListeners.forEach((fn) => fn(null)), 2600);
+  toastTimer = setTimeout(() => toastListeners.forEach((fn) => fn(null)), action ? 5000 : 2600);
 }
 export function ToastHost() {
-  const [msg, setMsg] = useState(null);
+  const [item, setItem] = useState(null);
   useEffect(() => {
-    toastListeners.add(setMsg);
-    return () => toastListeners.delete(setMsg);
+    toastListeners.add(setItem);
+    return () => toastListeners.delete(setItem);
   }, []);
-  return msg ? html`<div class="toast" role="status">${msg}</div>` : null;
+  if (!item) return null;
+  return html`<div class="toast" role="status">
+    <span>${item.message}</span>
+    ${item.action && html`<button class="toast-action" onClick=${() => { setItem(null); item.action.run(); }}>${item.action.label}</button>`}
+  </div>`;
 }
